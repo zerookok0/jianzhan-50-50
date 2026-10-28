@@ -1,1 +1,35 @@
+# ============================================================================
+# CLOUDFLARE PAGES ROUTING
+# ----------------------------------------------------------------------------
+# The site is a client-side-routed React app, so a deep link such as
+# /collection/midnight-oil-spot-bowl has no file on disk. Without a fallback
+# Pages answers 404 and the router never runs.
+#
+# ORDER MATTERS. Pages applies the top-most matching rule, so the rule that
+# must not be swallowed goes first.
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# 1. API passthrough — deliberately before the SPA fallback.
+# ---------------------------------------------------------------------------
+# In the intended deployment this rule never fires: the Worker is bound to
+# `www.example.com/api/*` as a zone route, and a zone route is evaluated
+# before the request can reach Pages at all. Cloudflare's own documentation
+# notes that `_redirects` only applies to static asset responses, so an
+# /api request handled by the Worker never consults this file.
+#
+# It exists for the case where that binding is missing or misconfigured.
+# Without it, `/*` below would answer an API call with 200 and a page of
+# HTML, and the client would report a JSON parse error — a misleading
+# symptom that points at the frontend instead of at the missing route. With
+# it, a missing Worker binding produces a 404 on a JSON request, which names
+# the actual problem.
+#
+# A 200 proxy to the same path is what Pages supports for this (the docs
+# table lists proxying as relative-URL-only and rejects other status codes).
+/api/*  /api/:splat  200
+
+# ---------------------------------------------------------------------------
+# 2. SPA fallback — everything else renders the app shell.
+# ---------------------------------------------------------------------------
 /*  /index.html  200

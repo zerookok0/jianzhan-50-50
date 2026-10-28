@@ -1,39 +1,59 @@
-# Logs
-logs
+# ============================================================================
+# SECRETS — the reason this file exists
+# ----------------------------------------------------------------------------
+# `.dev.vars` holds Worker-only values (admin bootstrap password, webhook
+# signing secret, provider keys). If it reaches a remote, those values are
+# public forever: git keeps history, so deleting the file later does not
+# remove it. Treat this entry as load-bearing.
+# ============================================================================
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# Local environment overrides. `.env` is COMMITTED on purpose — it holds only
+# VITE_* values, which Vite inlines into the browser bundle and are therefore
+# public by definition. Anything private belongs in `.dev.vars`, not here.
+.env.local
+.env.*.local
+.env.production
+.env.development
+
+# ============================================================================
+# Build output and caches
+# ============================================================================
+dist
+dist-ssr
+*.local
+
+# Wrangler's local state: D1 shim databases, R2 objects, compiled Worker code.
+# Committing this would ship a database snapshot with real order data in it.
+.wrangler
+.local-state
+
+# ============================================================================
+# Dependencies
+# ============================================================================
+node_modules
+.pnp
+.pnp.js
+
+# ============================================================================
+# Logs and test artifacts
+# ============================================================================
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-lerna-debug.log*
+.lint/
+coverage
 
-node_modules
-dist
-dist-ssr
-*.local
-
-# ---------------------------------------------------------------------------
-# SECRETS — never commit these
-# ---------------------------------------------------------------------------
-.dev.vars
-.dev.vars.*
-!.dev.vars.example
-.env
-.env.*
-!.env.example
-
-# Cloudflare / wrangler local state
-.wrangler/
-.wrangler-state/
-worker-configuration.d.ts
-
-# Editor directories and files
+# ============================================================================
+# Editor and OS
+# ============================================================================
+.DS_Store
+Thumbs.db
+.idea
 .vscode/*
 !.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+*.swp

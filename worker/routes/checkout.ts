@@ -2,6 +2,7 @@ import { json, readJson } from '../lib/http.ts'
 import { conflict, paymentUnconfigured, validationFailed } from '../lib/errors.ts'
 import { Ctx, validate, str, email, parseAddress, type Address } from '../lib/validate.ts'
 import { resolveCart } from './cart.ts'
+import * as cartRepo from '../repositories/carts.ts'
 import { loadCart, computeCartView } from '../services/cart.ts'
 import { createOrder } from '../services/orders.ts'
 import { buildProviders } from '../payments/provider.ts'
@@ -103,7 +104,31 @@ export async function checkoutHandler(env: Env, request: Request): Promise<Respo
 
   const { cart } = await resolveCart(env, request)
 
-  const loaded = await loadCart(env.DB, cart, {
+  /*
+   * Persist the destination BEFORE pricing.
+   *
+   * This was the bug that made checkout impossible: the quote endpoint
+   * applies the address only to a throwaway copy of the cart, but order
+   * creation prices the cart it loaded from D1 — which still had a null
+   * country, so shipping came back "Enter a delivery country to see
+   * shipping" and every order was refused with a 409.
+   *
+   * The shipping address is the destination goods actually travel to. It
+   * is also what tax is based on (destination-based VAT/sales tax), so
+   * persisting it is the correct model, not a workaround. On the next
+   * checkout request loadCart picks it up from the row.
+   */
+  await cartRepo.updateCartContact(env.DB, cart.id, {
+    country: input.shipping.country.toUpperCase(),
+    region: input.shipping.region || null,
+    postcode: input.shipping.postcode || null,
+    email: input.email.toLowerCase(),
+  })
+
+  const refreshed = await cartRepo.findCartByTokenHash(env.DB, cart.token_hash)
+  if (!refreshed) throw conflict('Your cart could not be loaded. Please refresh and try again.')
+
+  const loaded = await loadCart(env.DB, refreshed, {
     selectedShippingId: input.shippingMethodId || null,
   })
 
@@ -162,7 +187,7 @@ export async function checkoutHandler(env: Env, request: Request): Promise<Respo
 
 export async function getOrderHandler(env: Env, reference: string): Promise<Response> {
   // Dynamic import keeps the orders service out of the catalogue hot path.
-  const { getOrderByReference } = await import('../services/orders')
+  const { getOrderByReference } = await import('../services/orders.ts')
 
   const normalized = reference.trim().toUpperCase()
   if (!/^JZ-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(normalized)) {

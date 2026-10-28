@@ -1,17 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
-import { products, formatPrice, glazes } from '../data/products'
 import { posts } from '../data/posts'
 import { visual } from '../styles/visual'
 import { img } from '../data/images'
 import { AppLink, MediaImage } from '../components/ui/Media'
 import { ProductCard } from '../components/ui/ProductCard'
-import type { Product } from '../data/types'
+import { useCatalogue } from '../lib/catalogue'
+import { formatMinor } from '../lib/api/client'
+import type { CatalogueProduct } from '../lib/catalogue'
 import { ArrowDown, ArrowRight, ScrollIndicator } from '../components/ui/Icons'
 import { usePrefersReducedMotion, useReveal } from '../lib/hooks'
 import { GlazeExplorer } from '../components/sections/GlazeExplorer'
 
 interface HomeProps {
-  onQuickView: (p: Product) => void
+  onQuickView: (p: CatalogueProduct) => void
 }
 
 export function Home({ onQuickView }: HomeProps) {
@@ -19,6 +20,8 @@ export function Home({ onQuickView }: HomeProps) {
   const [heroLoaded, setHeroLoaded] = useState(false)
   const heroRef = useRef<HTMLDivElement>(null)
   const reduce = usePrefersReducedMotion()
+
+  const { products, glazes, loading } = useCatalogue()
 
   /* Subtle parallax on the hero photograph only — never on text. */
   useEffect(() => {
@@ -42,6 +45,10 @@ export function Home({ onQuickView }: HomeProps) {
 
   const featured = products.filter((p) => p.featured).slice(0, 3)
   const latest = posts.slice(0, 3)
+
+  const currency = products[0]?.currency ?? 'USD'
+  const minorUnit = products[0]?.minorUnit ?? 2
+  const featuredFrom = featured.length ? Math.min(...featured.map((p) => p.fromPrice)) : null
 
   return (
     <>
@@ -182,10 +189,21 @@ export function Home({ onQuickView }: HomeProps) {
           </header>
 
           <div className="card-grid">
-            {featured.map((p, i) => (
-              <ProductCard key={p.id} product={p} onQuickView={onQuickView} index={i} />
-            ))}
+            {loading && featured.length === 0
+              ? Array.from({ length: 3 }).map((_, i) => (
+                  <div key={`skeleton-${i}`} className="card card--skeleton" aria-hidden="true" />
+                ))
+              : featured.map((p, i) => (
+                  <ProductCard key={p.id} product={p} onQuickView={onQuickView} index={i} />
+                ))}
           </div>
+
+          {!loading && featured.length === 0 && (
+            <p className="body" role="status">
+              The shelf is being restocked. The full catalogue still lists every piece the studio
+              has recorded.
+            </p>
+          )}
         </div>
       </section>
 
@@ -327,10 +345,19 @@ export function Home({ onQuickView }: HomeProps) {
         </div>
       </section>
 
-      {/* Keeps the price reference visible for the demo dataset */}
+      {/*
+        Screen-reader summary of the live catalogue. This used to print a
+        "demo dataset" price; it now reports the real featured price, and
+        stays silent about prices while the API read is still in flight.
+      */}
       <p className="sr-only">
-        Catalogue contains {products.length} pieces. Featured pieces from{' '}
-        {formatPrice(Math.min(...featured.map((p) => p.price)))}.
+        {featuredFrom !== null && !loading
+          ? `Catalogue contains ${products.length} piece${
+              products.length === 1 ? '' : 's'
+            }. Featured pieces from ${formatMinor(featuredFrom, currency, minorUnit)}.`
+          : `Catalogue contains ${products.length} piece${
+              products.length === 1 ? '' : 's'
+            }.`}
       </p>
       {/* Preload hint for the next section image */}
       <link rel="prefetch" href={img('kiln-glow', 800)} as="image" />

@@ -15,16 +15,20 @@
     "test:logic": "node scripts/check-mock-logic.mjs",
     "test:build": "node scripts/verify-build.mjs",
     "test:images": "node scripts/check-images.mjs",
-    "verify": "npm run typecheck && npm run typecheck:worker && npm run test:unit && npm run test:migrations && npm run test:build",
+    "verify": "npm run typecheck && npm run typecheck:worker && npm run test:unit && npm run test:migrations && npm run build && npm run test:build",
     "worker:dev": "wrangler dev",
     "worker:deploy": "wrangler deploy",
+    "api:dev": "node scripts/serve-api.mjs",
+    "test:purchase": "node scripts/test-purchase.mjs",
+    "db:reset": "node scripts/reset-db.mjs",
     "db:migrate:local": "wrangler d1 migrations apply jianzhan-db --local",
     "db:migrate:remote": "wrangler d1 migrations apply jianzhan-db --remote",
     "db:seed:local": "wrangler d1 execute jianzhan-db --local --file=./migrations/seed.sql"
   },
   "dependencies": {
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "sql.js": "^1.15.2"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261028.1",

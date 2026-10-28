@@ -18,6 +18,7 @@
 
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { stripSqlComments, countParens } from './lib/sql-strip.mjs'
 
 let failures = 0
 const check = (name, ok, detail = '') => {
@@ -50,15 +51,22 @@ const sql = files.map((f) => readFileSync(join(dir, f), 'utf8')).join('\n')
 
 /* ---- Statement-level balance ---- */
 
-// Strip line comments before counting, so apostrophes in prose don't confuse us.
-const stripped = sql
-  .split('\n')
-  .map((line) => line.replace(/--.*$/, ''))
-  .join('\n')
+// Strip comments before any structural check. Prose must never be mistaken
+// for schema: an apostrophe in "-- customer's cart" would unbalance the
+// quote counter, and the word "double" in "double-clicked" would trip the
+// floating-point check below.
+//
+// The stripping is a lexical scan (./lib/sql-strip.mjs), not two regex
+// passes. The regex version removed line comments first, and these files
+// use banner comments such as `/* ---- Cart items ---- */` — pass one
+// deleted the `*/` along with the rest of that line, so the block never
+// closed and pass two swallowed the CREATE TABLE statements that followed.
+// That is why the checker once reported missing tables and unbalanced
+// parentheses for SQL that was correct all along.
+const stripped = stripSqlComments(sql)
 
-const openParens = (stripped.match(/\(/g) ?? []).length
-const closeParens = (stripped.match(/\)/g) ?? []).length
-check('balanced parentheses', openParens === closeParens, `${openParens} open vs ${closeParens} close`)
+const parens = countParens(sql)
+check('balanced parentheses', parens.balanced, `${parens.open} open vs ${parens.close} close`)
 
 const singleQuotes = (stripped.match(/'/g) ?? []).length
 check('balanced single quotes', singleQuotes % 2 === 0, `${singleQuotes} quote characters`)

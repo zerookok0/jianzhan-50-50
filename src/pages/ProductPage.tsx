@@ -1,29 +1,62 @@
-import { useState } from 'react'
-import { getProduct, getRelated, getGlaze, formatPrice, availabilityLabels } from '../data/products'
+import { useEffect, useState } from 'react'
+import { useCatalogueProduct, useCatalogue } from '../lib/catalogue'
+import { formatMinor } from '../lib/api/client'
 import { useDocumentMeta, useReveal } from '../lib/hooks'
-import { MediaImage, AppLink } from '../components/ui/Media'
+import { ProductImage, AppLink } from '../components/ui/Media'
 import { BuyButton } from '../components/ui/BuyButton'
 import { FavButton } from '../components/ui/FavButton'
 import { Lightbox } from '../components/ui/Lightbox'
 import { ProductCard } from '../components/ui/ProductCard'
 import { ArrowRight, Expand } from '../components/ui/Icons'
-import type { Product } from '../data/types'
+import type { CatalogueProduct } from '../lib/catalogue'
 
 interface ProductPageProps {
   slug: string
-  onQuickView: (p: Product) => void
+  onQuickView: (p: CatalogueProduct) => void
+}
+
+const AVAILABILITY_LABEL: Record<string, string> = {
+  available: 'Available',
+  'made-to-order': 'Made to order',
+  'sold-out': 'Sold — archive',
+  enquire: 'Enquire',
 }
 
 export function ProductPage({ slug, onQuickView }: ProductPageProps) {
-  const product = getProduct(slug)
+  const { product, loading, error } = useCatalogueProduct(slug)
+  const { related: getRelated } = useCatalogue()
+
   const [lightbox, setLightbox] = useState<number | null>(null)
   const [activeImage, setActiveImage] = useState(0)
 
   useDocumentMeta(
-    product ? `${product.name} — ${formatPrice(product.price, product.currency)} | JIANZHAN` : 'Piece not found | JIANZHAN',
+    product
+      ? `${product.name} — ${formatMinor(product.price, product.currency, product.minorUnit)} | JIANZHAN`
+      : 'Piece not found | JIANZHAN',
     product?.description.slice(0, 155),
   )
-  useReveal([slug])
+  useReveal([slug, product?.id])
+
+  // A new slug means a new gallery; without this the lightbox could open
+  // on an index the previous product had but this one does not.
+  useEffect(() => {
+    setActiveImage(0)
+    setLightbox(null)
+  }, [slug])
+
+  /* ---- Still loading the live catalogue ---- */
+
+  if (loading && !product) {
+    return (
+      <div className="shell not-found-page" aria-busy="true">
+        <p className="eyebrow">Loading</p>
+        <h1 className="display display--lg">Fetching this piece…</h1>
+        <p className="body">Reading the latest price and stock from our store.</p>
+      </div>
+    )
+  }
+
+  /* ---- Not in the catalogue ---- */
 
   if (!product) {
     return (
@@ -31,7 +64,9 @@ export function ProductPage({ slug, onQuickView }: ProductPageProps) {
         <p className="eyebrow">Not Found</p>
         <h1 className="display display--lg">This piece is no longer listed</h1>
         <p className="body">
-          It may have been archived or moved. The current catalogue is the best place to look next.
+          {error
+            ? 'The store could not be reached, so this page cannot show live stock or pricing.'
+            : 'It may have been archived or sold. The current catalogue is the best place to look next.'}
         </p>
         <AppLink href="/collection" className="btn btn--outline">
           Back to the collection
@@ -41,8 +76,8 @@ export function ProductPage({ slug, onQuickView }: ProductPageProps) {
   }
 
   const related = getRelated(product, 3)
-  const glaze = getGlaze(product.glaze)
-  const soldOut = product.availability === 'sold-out'
+  const status = AVAILABILITY_LABEL[product.availability] ?? product.availability
+  const images = product.images.length ? product.images : ['']
 
   return (
     <div className="product-page" key={product.id}>
@@ -65,13 +100,12 @@ export function ProductPage({ slug, onQuickView }: ProductPageProps) {
               onClick={() => setLightbox(activeImage)}
               aria-label={`Open ${product.name} image ${activeImage + 1} full screen`}
             >
-              <MediaImage
-                image={product.images[activeImage]}
+              <ProductImage
+                src={images[activeImage]}
                 alt={`${product.name} — ${product.subtitle}, view ${activeImage + 1}`}
                 ratio={1}
                 sizes="(min-width: 1024px) 52vw, 92vw"
                 priority
-                showFallbackNote
               />
               <span className="product-gallery__zoom" aria-hidden="true">
                 <Expand width={14} height={14} /> Zoom
@@ -79,21 +113,23 @@ export function ProductPage({ slug, onQuickView }: ProductPageProps) {
             </button>
           </div>
 
-          <div className="product-gallery__thumbs" role="tablist" aria-label="Product images">
-            {product.images.map((im, i) => (
-              <button
-                key={im + i}
-                type="button"
-                role="tab"
-                aria-selected={i === activeImage}
-                aria-label={`Show image ${i + 1}`}
-                className={`product-gallery__thumb ${i === activeImage ? 'is-active' : ''}`}
-                onClick={() => setActiveImage(i)}
-              >
-                <MediaImage image={im} alt="" ratio={1} sizes="120px" />
-              </button>
-            ))}
-          </div>
+          {images.length > 1 && (
+            <div className="product-gallery__thumbs" role="tablist" aria-label="Product images">
+              {images.map((im, i) => (
+                <button
+                  key={`${im}-${i}`}
+                  type="button"
+                  role="tab"
+                  aria-selected={i === activeImage}
+                  aria-label={`Show image ${i + 1}`}
+                  className={`product-gallery__thumb ${i === activeImage ? 'is-active' : ''}`}
+                  onClick={() => setActiveImage(i)}
+                >
+                  <ProductImage src={im} alt="" ratio={1} sizes="120px" />
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Details */}
@@ -101,7 +137,8 @@ export function ProductPage({ slug, onQuickView }: ProductPageProps) {
           <div className="product-info__head">
             <div>
               <p className="eyebrow">
-                {availabilityLabels[product.availability]} · {product.year}
+                {status}
+                {product.year ? ` · ${product.year}` : ''}
               </p>
               <h1 className="display display--lg product-info__title">{product.name}</h1>
               <p className="serif-italic product-info__sub">{product.subtitle}</p>
@@ -110,36 +147,44 @@ export function ProductPage({ slug, onQuickView }: ProductPageProps) {
           </div>
 
           <div className="product-info__price-row">
-            <p className="product-info__price">{formatPrice(product.price, product.currency)}</p>
-            <p className="meta">Demo price — not live</p>
+            <p className="product-info__price">
+              {product.variants.length > 1 && product.fromPrice !== product.price ? 'From ' : ''}
+              {formatMinor(product.fromPrice, product.currency, product.minorUnit)}
+            </p>
+            <p className="meta">
+              {product.source === 'api' ? 'Live price · server confirmed' : 'Offline price'}
+            </p>
           </div>
 
           <p className="body product-info__desc">{product.description}</p>
 
-          <BuyButton product={product} label={soldOut ? 'Archived' : 'Buy on our store'} />
+          {/* The purchase boundary. The server owns the price from here. */}
+          <BuyButton product={product} />
 
           <div className="product-info__meta">
             <AppLink href={`/collection?glaze=${product.glaze}`} className="tag">
-              {glaze?.name ?? product.glaze}
+              {product.glaze.replace('-', ' ')}
             </AppLink>
-            <span className="tag">{product.category.replace('-', ' ')}</span>
-            <span className="tag">Single firing</span>
+            <span className="tag">{String(product.category).replace('-', ' ')}</span>
+            {product.sku && <span className="tag">{product.sku}</span>}
           </div>
 
           {/* Specifications */}
-          <section className="product-specs" aria-labelledby="specs-title">
-            <h2 id="specs-title" className="eyebrow">
-              Specifications
-            </h2>
-            <dl className="specs">
-              {product.specifications.map((s) => (
-                <div key={s.label} className="specs__row">
-                  <dt>{s.label}</dt>
-                  <dd>{s.value}</dd>
-                </div>
-              ))}
-            </dl>
-          </section>
+          {product.specifications.length > 0 && (
+            <section className="product-specs" aria-labelledby="specs-title">
+              <h2 id="specs-title" className="eyebrow">
+                Specifications
+              </h2>
+              <dl className="specs">
+                {product.specifications.map((s) => (
+                  <div key={s.label} className="specs__row">
+                    <dt>{s.label}</dt>
+                    <dd>{s.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          )}
 
           {/* Accordions */}
           <div className="accordions">
@@ -151,20 +196,6 @@ export function ProductPage({ slug, onQuickView }: ProductPageProps) {
                   The final surface depends on how heat and ash moved through the chamber and on the
                   pace of cooling afterwards — factors the maker guides but does not control.
                 </p>
-              </div>
-            </details>
-
-            <details className="accordion">
-              <summary>Dimensions & materials</summary>
-              <div className="accordion__body">
-                <ul className="dot-list">
-                  {product.specifications.map((s) => (
-                    <li key={s.label}>
-                      <span>{s.label}</span>
-                      <span>{s.value}</span>
-                    </li>
-                  ))}
-                </ul>
               </div>
             </details>
 
@@ -183,18 +214,24 @@ export function ProductPage({ slug, onQuickView }: ProductPageProps) {
               <summary>Shipping</summary>
               <div className="accordion__body">
                 <p>
-                  Packed in a linen-wrapped box with a firing note. Shipping options, lead times and
-                  duties are shown on the product page in our store at checkout — this site does not
-                  calculate or process orders.
+                  Packed in a linen-wrapped box with a firing note. Delivery options and duties are
+                  calculated by our store at checkout, once the destination is known.
                 </p>
               </div>
             </details>
           </div>
 
           <p className="product-info__disclaimer">
-            All purchasing is completed on our WordPress store. This page is a presentation
-            catalogue; prices and availability are illustrative demo data.
+            {product.source === 'api'
+              ? 'Price, stock and totals are calculated by our store — this page displays them but never computes them.'
+              : 'The store could not be reached, so this page is showing an offline record. Prices are not live and purchasing is unavailable until it reconnects.'}
           </p>
+
+          {product.source === 'static' && (
+            <p className="buy__notice" role="status">
+              Offline catalogue — reconnect the store to buy this piece.
+            </p>
+          )}
         </div>
       </div>
 
@@ -224,8 +261,8 @@ export function ProductPage({ slug, onQuickView }: ProductPageProps) {
       )}
 
       <Lightbox
-        images={product.images}
-        alts={product.images.map(
+        images={images}
+        alts={images.map(
           (_, i) => `${product.name} — ${product.subtitle}, view ${i + 1}`,
         )}
         index={lightbox}

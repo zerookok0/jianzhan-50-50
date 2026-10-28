@@ -63,7 +63,44 @@ export interface InventoryRow {
 export interface ProductWithRelations extends ProductRow {
   variants: VariantRow[]
   images: ImageRow[]
+  /**
+   * The product-level inventory row (variant_id IS NULL). Null when the
+   * product is stocked entirely per variant.
+   */
   inventory: InventoryRow | null
+  /**
+   * EVERY inventory row for this product, parent and per-variant.
+   *
+   * This exists because a product with options has one row per option, and
+   * a single `inventory` field cannot represent that: reading only the
+   * first row silently applied the parent's stock to every variant, which
+   * is how a "Large" bowl appeared buyable while its row said zero.
+   */
+  inventoryRows: InventoryRow[]
+}
+
+/** Stock that can actually be bought from one inventory row. */
+export function inventoryAvailable(row: InventoryRow | null | undefined): number | null {
+  if (!row) return null
+  // Untracked means unlimited (made to order) — not zero.
+  if (row.is_tracked !== 1) return null
+  return Math.max(0, row.on_hand - row.reserved)
+}
+
+/**
+ * The inventory row that governs a specific option.
+ *
+ * Falls back to the product-level row when a variant has no row of its
+ * own, so a store that tracks stock at product level keeps working. It
+ * never falls back the other way: a variant with a row must use it.
+ */
+export function inventoryRowFor(
+  product: ProductWithRelations,
+  variantId: string | null,
+): InventoryRow | null {
+  if (!variantId) return product.inventory ?? null
+  const own = product.inventoryRows.find((r) => r.variant_id === variantId)
+  return own ?? product.inventory ?? null
 }
 
 export interface ListProductsOptions {
@@ -193,14 +230,19 @@ export async function hydrateMany(
 
   const vMap = byProduct(variants.results ?? [])
   const iMap = byProduct(images.results ?? [])
-  const invMap = new Map((inventory.results ?? []).map((r) => [r.product_id, r]))
+  const invMap = byProduct(inventory.results ?? [])
 
-  return rows.map((r) => ({
-    ...r,
-    variants: vMap.get(r.id) ?? [],
-    images: iMap.get(r.id) ?? [],
-    inventory: invMap.get(r.id) ?? null,
-  }))
+  return rows.map((r) => {
+    const invRows = invMap.get(r.id) ?? []
+    return {
+      ...r,
+      variants: vMap.get(r.id) ?? [],
+      images: iMap.get(r.id) ?? [],
+      // The parent row is the one whose variant_id is NULL.
+      inventory: invRows.find((i) => i.variant_id === null) ?? null,
+      inventoryRows: invRows,
+    }
+  })
 }
 
 async function hydrate(db: D1Database, product: ProductRow): Promise<ProductWithRelations> {
@@ -213,14 +255,20 @@ async function hydrate(db: D1Database, product: ProductRow): Promise<ProductWith
       .prepare('SELECT * FROM product_images WHERE product_id = ?1 ORDER BY position')
       .bind(product.id)
       .all<ImageRow>(),
-    db.prepare('SELECT * FROM inventory WHERE product_id = ?1').bind(product.id).first<InventoryRow>(),
+    db
+      .prepare('SELECT * FROM inventory WHERE product_id = ?1')
+      .bind(product.id)
+      .all<InventoryRow>(),
   ])
+
+  const invRows = inventory.results ?? []
 
   return {
     ...product,
     variants: variants.results ?? [],
     images: images.results ?? [],
-    inventory: inventory ?? null,
+    inventory: invRows.find((i) => i.variant_id === null) ?? null,
+    inventoryRows: invRows,
   }
 }
 

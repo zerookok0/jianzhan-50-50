@@ -107,11 +107,20 @@ export async function loadCart(
   const priced: PricedLine[] = []
   const warnings: string[] = []
 
-  const inventoryIds = [...new Set(
-    products
-      .filter((p): p is productRepo.ProductWithRelations => p !== null && p.inventory !== null)
-      .map((p) => p.inventory!.id),
-  )]
+  /**
+   * Every inventory row that any line could need — not just the parent.
+   *
+   * Collecting only `product.inventory.id` meant a variant line was always
+   * checked against the parent row, so a sold-out size looked available
+   * for as long as the parent had stock.
+   */
+  const inventoryIds = [
+    ...new Set(
+      products
+        .filter((p): p is productRepo.ProductWithRelations => p !== null)
+        .flatMap((p) => p.inventoryRows.map((row) => row.id)),
+    ),
+  ]
   const availability = await getAvailability(db, inventoryIds)
 
   for (const line of lines) {
@@ -140,7 +149,9 @@ export async function loadCart(
     const label = variant ? `${variant.option_name}: ${variant.option_value}` : ''
     const sku = variant?.sku ?? product.sku ?? ''
 
-    const inv = availability.get(product.inventory?.id ?? '')
+    // The row that governs THIS line: the variant's own when it has one.
+    const invRow = productRepo.inventoryRowFor(product, line.variant_id)
+    const inv = availability.get(invRow?.id ?? '')
     const available = inv?.tracked ? inv.available : null
     const inStock = available === null ? true : available >= line.quantity
 
@@ -531,10 +542,17 @@ export async function addToCart(
 
   const desired = (existing?.quantity ?? 0) + args.quantity
 
-  // Stock check before writing, so the cart never holds an impossible line.
-  if (product.inventory) {
-    const avail = await getAvailability(db, [product.inventory.id])
-    const info = avail.get(product.inventory.id)
+  /*
+   * Stock check before writing, so the cart never holds an impossible line.
+   *
+   * The row must be the one that governs the chosen option. Checking the
+   * parent row unconditionally is what let a sold-out "Large" be added
+   * while the parent still reported stock.
+   */
+  const invRow = productRepo.inventoryRowFor(product, args.variantId)
+  if (invRow) {
+    const avail = await getAvailability(db, [invRow.id])
+    const info = avail.get(invRow.id)
     if (info?.tracked && desired > info.available) {
       throw outOfStock(
         info.available === 0

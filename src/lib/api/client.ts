@@ -1,31 +1,48 @@
+import { apiUrl } from '../../config/store'
+
 /**
- * API CLIENT (frontend)
+ * STORE API CLIENT
  * ------------------------------------------------------------------
- * Talks to the first-party Worker at /api/v1. No WooCommerce anywhere.
+ * A thin, typed wrapper over the Worker API. Two deliberate rules:
  *
- * Money crosses the wire as integer minor units plus an explicit
- * `currency` and `minorUnit`. Formatting happens only at render time.
+ *   1. It never computes money. Every figure the UI shows came from the
+ *      server, already in minor units, with an explicit currency and
+ *      minorUnit. `formatMinor` only *displays*; it never derives.
  *
- * Cart identity is a bearer token in `X-Cart-Token`. Not a cookie: a
- * cross-origin cookie would be blocked by third-party cookie policy, and
- * a header cannot be set by a cross-site form, which also removes CSRF.
+ *   2. The guest cart token is held in a header, not a cookie. It is
+ *      persisted in localStorage because a cart must survive a reload,
+ *      and it is opaque: the server stores only its SHA-256.
  */
 
-const CART_HEADER = 'X-Cart-Token'
-const TOKEN_KEY = 'jianzhan:cart-token:v3'
+/* ---------------- Errors ---------------- */
 
-/* ---------------- Error shape ---------------- */
-
-export interface ApiErrorBody {
-  error: { code: string; message: string; details?: unknown }
-}
+export type ApiErrorCode =
+  | 'bad_request'
+  | 'validation_failed'
+  | 'unauthorized'
+  | 'forbidden'
+  | 'not_found'
+  | 'method_not_allowed'
+  | 'conflict'
+  | 'out_of_stock'
+  | 'cart_expired'
+  | 'coupon_invalid'
+  | 'coupon_exhausted'
+  | 'shipping_unavailable'
+  | 'payment_unconfigured'
+  | 'payment_failed'
+  | 'rate_limited'
+  | 'internal'
+  | 'not_implemented'
+  | 'network_error'
 
 export class ApiError extends Error {
-  readonly code: string
+  readonly code: ApiErrorCode
+  /** HTTP status, or 0 when the request never reached the server. */
   readonly status: number
   readonly details?: unknown
 
-  constructor(code: string, message: string, status: number, details?: unknown) {
+  constructor(code: ApiErrorCode, message: string, status: number, details?: unknown) {
     super(message)
     this.name = 'ApiError'
     this.code = code
@@ -33,131 +50,138 @@ export class ApiError extends Error {
     this.details = details
   }
 
+  /** True when the request may be retried as-is. */
   get retryable(): boolean {
-    return this.status === 0 || this.status >= 500 || this.status === 429
+    return this.status === 0 || this.status === 429 || this.status >= 500
   }
 }
 
-/* ---------------- Base URL ---------------- */
+/* ---------------- Cart token ---------------- */
 
-const envBase = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '')
+const TOKEN_KEY = 'jianzhan:cart-token:v1'
 
-/**
- * Empty base means same-origin, which is the production setup: the Worker
- * is routed on `/api/*` of the same domain. A separate origin is only used
- * when the API is deployed independently.
- */
-function apiBase(): string {
-  return envBase
-}
-
-export function apiUrl(path: string): string {
-  const suffix = path.startsWith('/') ? path : `/${path}`
-  return `${apiBase()}/api/v1${suffix}`
-}
-
-/* ---------------- Token ---------------- */
-
-let memoryToken: string | null = null
-
-export function getCartToken(): string | null {
-  if (memoryToken) return memoryToken
+function readToken(): string | null {
   try {
-    memoryToken = window.localStorage.getItem(TOKEN_KEY)
+    return window.localStorage.getItem(TOKEN_KEY)
   } catch {
-    memoryToken = null
+    return null
   }
-  return memoryToken
 }
 
-function setCartToken(token: string | null) {
-  memoryToken = token
+function writeToken(token: string | null): void {
   try {
     if (token) window.localStorage.setItem(TOKEN_KEY, token)
     else window.localStorage.removeItem(TOKEN_KEY)
   } catch {
-    /* private mode — memory copy still works for this session */
+    /* private mode — the cart still works for this page view */
   }
 }
 
-/* ---------------- Core request ---------------- */
+/** Forget the cart locally, e.g. after the server reports it expired. */
+export function clearCartToken(): void {
+  writeToken(null)
+}
+
+/* ---------------- Transport ---------------- */
 
 interface RequestOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'
   body?: unknown
   /** Extra headers, e.g. Idempotency-Key. */
   headers?: Record<string, string>
-  /** Send the cart token. Off for catalogue reads. */
-  withToken?: boolean
   signal?: AbortSignal
 }
 
-async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, headers: extraHeaders, withToken = true, signal } = opts
-
-  const headers: Record<string, string> = { Accept: 'application/json', ...extraHeaders }
-  if (body !== undefined) headers['Content-Type'] = 'application/json'
-
-  if (withToken) {
-    const token = getCartToken()
-    if (token) headers[CART_HEADER] = token
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    ...options.headers,
   }
 
-  let res: Response
+  if (options.body !== undefined) {
+    headers['Content-Type'] = 'application/json'
+  }
+
+  const token = readToken()
+  if (token) headers['X-Cart-Token'] = token
+
+  let response: Response
   try {
-    res = await fetch(apiUrl(path), {
-      method,
+    response = await fetch(apiUrl(path), {
+      method: options.method ?? 'GET',
       headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
       credentials: 'omit',
-      signal,
+      signal: options.signal,
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
     })
-  } catch {
+  } catch (err) {
+    // Abort is not a failure worth surfacing.
+    if (err instanceof DOMException && err.name === 'AbortError') throw err
     throw new ApiError(
-      'network',
-      'Could not reach the store. Check your connection and try again.',
+      'network_error',
+      'Could not reach the store API. Check your connection and try again.',
       0,
     )
   }
 
-  // A new cart returns its token once, in this header.
-  const issued = res.headers.get(CART_HEADER)
-  if (issued) setCartToken(issued)
+  // The server issues a cart token on the first cart request that had none.
+  const issued = response.headers.get('X-Cart-Token')
+  if (issued) writeToken(issued)
 
-  const text = await res.text()
-  let payload: unknown = null
+  if (response.status === 204) return undefined as T
+
+  const text = await response.text()
+  let parsed: unknown = null
   if (text) {
     try {
-      payload = JSON.parse(text)
+      parsed = JSON.parse(text)
     } catch {
-      throw new ApiError('invalid_response', 'The store sent a malformed response.', res.status)
+      parsed = null
     }
   }
 
-  if (!res.ok) {
-    const err = payload as ApiErrorBody | null
+  if (!response.ok) {
+    const envelope = parsed as
+      | { error?: { code?: string; message?: string; details?: unknown } }
+      | null
+
+    const code = (envelope?.error?.code ?? 'internal') as ApiErrorCode
+    if (code === 'cart_expired') clearCartToken()
+
     throw new ApiError(
-      err?.error?.code ?? `http_${res.status}`,
-      err?.error?.message ?? `Request failed (${res.status}).`,
-      res.status,
-      err?.error?.details,
+      code,
+      envelope?.error?.message ?? `Request failed (${response.status}).`,
+      response.status,
+      envelope?.error?.details,
     )
   }
 
-  return payload as T
+  return parsed as T
 }
 
-/* ---------------- Shared types ---------------- */
+/* ---------------- Money display ---------------- */
 
-export interface Money {
-  subtotal: number
-  discountTotal: number
-  discountedSubtotal: number
-  taxTotal: number
-  shippingTotal: number
-  grandTotal: number
-  taxLines: { name: string; rateBp: number; amount: number }[]
+/**
+ * Render minor units as a currency string.
+ *
+ * Display only. The value passed in is always whatever the server sent;
+ * nothing here multiplies quantities or applies rates.
+ */
+export function formatMinor(amount: number, currency: string, minorUnit: number): string {
+  const value = amount / Math.pow(10, minorUnit)
+  try {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: minorUnit,
+      maximumFractionDigits: minorUnit,
+    }).format(value)
+  } catch {
+    return `${value.toFixed(minorUnit)} ${currency}`
+  }
 }
+
+/* ---------------- Catalogue types ---------------- */
 
 export interface ApiImage {
   url: string
@@ -196,6 +220,15 @@ export interface ApiProduct {
   available: number | null
 }
 
+export interface ApiCategory {
+  id: string
+  slug: string
+  name: string
+  description: string
+}
+
+/* ---------------- Cart types ---------------- */
+
 export interface ApiCartLine {
   itemId: string
   productId: string
@@ -214,12 +247,19 @@ export interface ApiCartLine {
   requiresShipping: boolean
 }
 
-export interface ApiShippingOption {
+export interface ApiCartTotals {
+  subtotal: number
+  discountTotal: number
+  shippingTotal: number
+  taxTotal: number
+  grandTotal: number
+}
+
+export interface ApiShippingQuote {
   methodId: string
   name: string
-  deliveryTime: string
   amount: number
-  freeApplied: boolean
+  deliveryTime: string
 }
 
 export interface ApiCart {
@@ -228,18 +268,20 @@ export interface ApiCart {
   minorUnit: number
   items: ApiCartLine[]
   itemCount: number
-  totals: Money
+  totals: ApiCartTotals
   coupons: { code: string; accepted: boolean; discount: number; message?: string }[]
   shipping: {
     available: boolean
     reason?: string
-    selected: ApiShippingOption | null
-    options: ApiShippingOption[]
+    selected: ApiShippingQuote | null
+    options: ApiShippingQuote[]
   }
   needsShipping: boolean
   destination: { country: string | null; region: string | null; postcode: string | null }
   warnings: string[]
 }
+
+/* ---------------- Checkout types ---------------- */
 
 export interface ApiAddress {
   firstName: string
@@ -254,91 +296,25 @@ export interface ApiAddress {
   phone: string
 }
 
-/* ---------------- Endpoints ---------------- */
-
-export function listProducts(params: Record<string, string | number | undefined> = {}) {
-  const qs = new URLSearchParams()
-  for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined && v !== '') qs.set(k, String(v))
-  }
-  const q = qs.toString()
-  return request<{ products: ApiProduct[]; total: number; page: number; perPage: number }>(
-    `/products${q ? `?${q}` : ''}`,
-    { withToken: false },
-  )
-}
-
-export function getProduct(slug: string) {
-  return request<{ product: ApiProduct }>(`/products/${encodeURIComponent(slug)}`, {
-    withToken: false,
-  })
-}
-
-export function listCategories() {
-  return request<{ categories: { id: string; slug: string; name: string; description: string }[] }>(
-    '/categories',
-    { withToken: false },
-  )
-}
-
-export function getCart() {
-  return request<{ cart: ApiCart }>('/cart')
-}
-
-export function addCartItem(input: { productId: string; variantId?: string | null; quantity?: number }) {
-  return request<{ cart: ApiCart }>('/cart/items', {
-    method: 'POST',
-    body: {
-      productId: input.productId,
-      variantId: input.variantId ?? null,
-      quantity: input.quantity ?? 1,
-    },
-  })
-}
-
-export function updateCartItem(itemId: string, quantity: number) {
-  return request<{ cart: ApiCart }>(`/cart/items/${encodeURIComponent(itemId)}`, {
-    method: 'PATCH',
-    body: { quantity },
-  })
-}
-
-export function removeCartItem(itemId: string) {
-  return request<{ cart: ApiCart }>(`/cart/items/${encodeURIComponent(itemId)}`, {
-    method: 'DELETE',
-  })
-}
-
-export function applyCoupon(code: string) {
-  return request<{ cart: ApiCart }>('/cart/coupons', { method: 'POST', body: { code } })
-}
-
-export function removeCoupon(code: string) {
-  return request<{ cart: ApiCart }>(`/cart/coupons/${encodeURIComponent(code)}`, {
-    method: 'DELETE',
-  })
-}
-
-export function updateDestination(input: {
-  country?: string
-  region?: string
-  postcode?: string
-  email?: string
-}) {
-  return request<{ cart: ApiCart }>('/cart/destination', { method: 'PATCH', body: input })
-}
-
-export function quoteCheckout(input: {
+export interface QuoteInput {
   country: string
   region?: string
   postcode?: string
   email?: string
   shippingMethodId?: string
-}) {
-  return request<{ quote: ApiCart }>('/checkout/quote', { method: 'POST', body: input })
 }
 
-export interface CheckoutResponse {
+export interface CheckoutInput {
+  email: string
+  phone?: string
+  billingAddress: ApiAddress
+  shippingSameAsBilling: boolean
+  shippingAddress?: ApiAddress
+  shippingMethodId?: string
+  customerNote?: string
+}
+
+export interface CheckoutResult {
   order: {
     reference: string
     status: string
@@ -346,55 +322,172 @@ export interface CheckoutResponse {
     totals: { grandTotal: number; currency: string; minorUnit: number }
     reused: boolean
   }
-  payment: { provider: string; redirectUrl: string | null; clientSecret: string | null }
-}
-
-export function submitCheckout(
-  input: {
-    email: string
-    phone?: string
-    billingAddress: ApiAddress
-    shippingAddress?: ApiAddress
-    shippingSameAsBilling?: boolean
-    shippingMethodId?: string
-    customerNote?: string
-  },
-  idempotencyKey: string,
-) {
-  return request<CheckoutResponse>('/checkout', {
-    method: 'POST',
-    body: input,
-    // Sent as a header so a retry with the same key returns the SAME order
-    // instead of creating a second one and charging twice.
-    headers: { 'Idempotency-Key': idempotencyKey },
-  })
-}
-
-export function getOrder(reference: string) {
-  return request<{ order: Record<string, unknown> }>(
-    `/orders/${encodeURIComponent(reference)}`,
-    { withToken: false },
-  )
-}
-
-/* ---------------- Money formatting ---------------- */
-
-export function formatMinor(amount: number, currency: string, minorUnit = 2): string {
-  const value = amount / Math.pow(10, minorUnit)
-  try {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency,
-      minimumFractionDigits: minorUnit,
-      maximumFractionDigits: minorUnit,
-    }).format(value)
-  } catch {
-    return `${value.toFixed(minorUnit)} ${currency}`
+  payment: {
+    provider: string
+    /**
+     * Where to send the browser. This is NEVER proof of payment: only a
+     * verified webhook may mark an order paid.
+     */
+    redirectUrl: string | null
+    clientSecret?: string | null
   }
 }
 
-export function clearCartToken() {
-  setCartToken(null)
+export interface ApiOrderItem {
+  name: string
+  variantLabel: string
+  sku: string
+  unitPrice: number
+  quantity: number
+  lineTotal: number
 }
 
-export { request }
+export interface ApiOrder {
+  reference: string
+  status: string
+  fulfilmentStatus: string
+  currency: string
+  minorUnit: number
+  subtotal: number
+  discountTotal: number
+  shippingTotal: number
+  taxTotal: number
+  grandTotal: number
+  email: string
+  createdAt: number
+  items: ApiOrderItem[]
+  shipping: { address: unknown; methodName: string }
+  payments: { provider: string; status: string; amount: number }[]
+}
+
+/* ---------------- Catalogue ---------------- */
+
+export async function listProducts(params: {
+  page?: number
+  perPage?: number
+  category?: string
+  search?: string
+  sort?: 'price-asc' | 'price-desc' | 'name' | 'newest'
+  featured?: boolean
+} = {}): Promise<{ products: ApiProduct[]; total: number; page: number; perPage: number }> {
+  const qs = new URLSearchParams()
+  if (params.page) qs.set('page', String(params.page))
+  if (params.perPage) qs.set('perPage', String(params.perPage))
+  if (params.category) qs.set('category', params.category)
+  if (params.search) qs.set('search', params.search)
+  if (params.sort) qs.set('sort', params.sort)
+  if (params.featured) qs.set('featured', 'true')
+
+  const suffix = qs.toString() ? `?${qs.toString()}` : ''
+  return request(`/products${suffix}`)
+}
+
+export async function getProduct(slug: string): Promise<{ product: ApiProduct }> {
+  return request(`/products/${encodeURIComponent(slug)}`)
+}
+
+export async function listCategories(): Promise<{ categories: ApiCategory[] }> {
+  return request('/categories')
+}
+
+/* ---------------- Cart ---------------- */
+
+export async function getCart(): Promise<{ cart: ApiCart }> {
+  return request('/cart')
+}
+
+export async function addCartItem(input: {
+  productId: string
+  variantId?: string | null
+  quantity?: number
+}): Promise<{ cart: ApiCart }> {
+  return request('/cart/items', {
+    method: 'POST',
+    body: {
+      productId: input.productId,
+      variantId: input.variantId ?? undefined,
+      quantity: input.quantity ?? 1,
+    },
+  })
+}
+
+export async function updateCartItem(
+  itemId: string,
+  quantity: number,
+): Promise<{ cart: ApiCart }> {
+  return request(`/cart/items/${encodeURIComponent(itemId)}`, {
+    method: 'PATCH',
+    body: { quantity },
+  })
+}
+
+export async function removeCartItem(itemId: string): Promise<{ cart: ApiCart }> {
+  return request(`/cart/items/${encodeURIComponent(itemId)}`, { method: 'DELETE' })
+}
+
+export async function applyCoupon(code: string): Promise<{ cart: ApiCart }> {
+  return request('/cart/coupons', { method: 'POST', body: { code } })
+}
+
+export async function removeCoupon(code: string): Promise<{ cart: ApiCart }> {
+  return request(`/cart/coupons/${encodeURIComponent(code)}`, { method: 'DELETE' })
+}
+
+export async function updateDestination(input: {
+  country?: string
+  region?: string
+  postcode?: string
+  email?: string
+}): Promise<{ cart: ApiCart }> {
+  return request('/cart/destination', { method: 'PATCH', body: input })
+}
+
+/* ---------------- Checkout ---------------- */
+
+/**
+ * Price the current cart for a destination. Read-only on the server: no
+ * order is created and no stock is reserved, so it is safe to call while
+ * the customer is still typing.
+ */
+export async function quoteCheckout(input: QuoteInput): Promise<{ quote: ApiCart }> {
+  return request('/checkout/quote', {
+    method: 'POST',
+    body: {
+      country: input.country,
+      region: input.region || undefined,
+      postcode: input.postcode || undefined,
+      email: input.email || undefined,
+      shippingMethodId: input.shippingMethodId || undefined,
+    },
+  })
+}
+
+/**
+ * Create the order and start payment.
+ *
+ * The idempotency key is generated once per checkout attempt and reused on
+ * retry, so a double-click or a network retry returns the SAME order
+ * instead of charging twice.
+ */
+export async function submitCheckout(
+  input: CheckoutInput,
+  idempotencyKey: string,
+): Promise<CheckoutResult> {
+  return request('/checkout', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
+    body: {
+      email: input.email,
+      phone: input.phone || undefined,
+      billingAddress: input.billingAddress,
+      shippingSameAsBilling: input.shippingSameAsBilling,
+      shippingAddress: input.shippingAddress,
+      shippingMethodId: input.shippingMethodId || undefined,
+      customerNote: input.customerNote || undefined,
+    },
+  })
+}
+
+export async function getOrder(reference: string): Promise<{ order: ApiOrder }> {
+  return request(`/orders/${encodeURIComponent(reference)}`)
+}

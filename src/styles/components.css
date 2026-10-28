@@ -205,6 +205,49 @@
   color: var(--muted);
 }
 
+/* ---------------- Loading skeleton ----------------
+   Shown only while the live catalogue is in flight. It reserves the same
+   box as a real card, so the grid does not jump when the API answers —
+   and it moves so the page never looks frozen on a slow link.
+   ------------------------------------------------- */
+.card--skeleton {
+  background: linear-gradient(
+    100deg,
+    var(--surface-2) 20%,
+    var(--surface-3, #2a2a2a) 40%,
+    var(--surface-2) 60%
+  );
+  background-size: 220% 100%;
+  animation: cardSkeleton 1.6s var(--ease) infinite;
+  aspect-ratio: 4 / 5;
+  border: 1px solid var(--line);
+}
+
+@keyframes cardSkeleton {
+  0% {
+    background-position: 120% 0;
+  }
+  100% {
+    background-position: -20% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card--skeleton {
+    animation: none;
+  }
+}
+
+/* An option that cannot be chosen: dimmed, not hidden — its absence is
+   information, and hiding it makes the size run look arbitrary. */
+.chip.is-disabled,
+.chip:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
 /* ---------------- Favourite button ---------------- */
 .fav-btn {
   display: inline-flex;

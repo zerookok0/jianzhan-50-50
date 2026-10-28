@@ -19,6 +19,7 @@ import {
 } from './routes/cart.ts'
 import { quoteHandler, checkoutHandler, getOrderHandler } from './routes/checkout.ts'
 import { webhookHandler } from './routes/webhooks.ts'
+import { mockSessionHandler, mockCompleteHandler } from './routes/mock-gateway.ts'
 import {
   loginHandler,
   logoutHandler,
@@ -70,6 +71,16 @@ const routes = [
 
   /* ---- Webhooks ---- */
   { method: 'POST', pattern: '/api/v1/payments/:provider/webhook', handler: (c: Ctx) => webhookHandler(c.env, c.request, c.params.provider) },
+
+  /*
+   * ---- Test gateway (development only) ----
+   * Both handlers call requireDevelopment() themselves, so registering the
+   * routes unconditionally is safe: outside development they 404 exactly
+   * like any unknown path. The gate lives with the code it protects rather
+   * than in this table, where it could be edited away by mistake.
+   */
+  { method: 'POST', pattern: '/api/v1/mock-payment/sessions', handler: (c: Ctx) => mockSessionHandler(c.env, c.request) },
+  { method: 'POST', pattern: '/api/v1/mock-payment/complete', handler: (c: Ctx) => mockCompleteHandler(c.env, c.request) },
 
   /* ---- Admin ---- */
   { method: 'POST', pattern: '/api/v1/admin/login', handler: (c: Ctx) => loginHandler(c.env, c.request) },

@@ -135,11 +135,39 @@ export async function listCategoriesHandler(env: Env): Promise<Response> {
 /* ---------------- Mapping ---------------- */
 
 export function toProductDto(p: productRepo.ProductWithRelations): ProductDto {
-  const available = p.inventory
-    ? p.inventory.is_tracked === 1
-      ? Math.max(0, p.inventory.on_hand - p.inventory.reserved)
-      : null
-    : null
+  const available = productRepo.inventoryAvailable(p.inventory)
+
+  /**
+   * Variant stock comes from that variant's OWN inventory row.
+   *
+   * Reading the parent row for every option was the bug: a product with a
+   * "Large" that had sold out still advertised itself as buyable because
+   * the parent row had stock. `inventoryRowFor` only falls back to the
+   * parent when the variant genuinely has no row of its own.
+   */
+  const variants = p.variants
+    .filter((v) => v.is_active === 1)
+    .map((v) => {
+      const row = productRepo.inventoryRowFor(p, v.id)
+      const variantAvailable = productRepo.inventoryAvailable(row)
+      return {
+        id: v.id,
+        optionName: v.option_name,
+        optionValue: v.option_value,
+        price: v.price ?? p.price,
+        available: variantAvailable,
+        inStock: variantAvailable === null || variantAvailable > 0,
+      }
+    })
+
+  // A product is buyable if any option is, or if it has no options and the
+  // product-level stock allows it.
+  const inStock =
+    variants.length > 0
+      ? variants.some((v) => v.inStock)
+      : available === null
+        ? p.availability !== 'sold-out'
+        : available > 0
 
   return {
     id: p.id,
@@ -159,17 +187,8 @@ export function toProductDto(p: productRepo.ProductWithRelations): ProductDto {
     requiresShipping: p.requires_shipping === 1,
     weightG: p.weight_g,
     images: p.images.map((i) => ({ url: i.url, alt: i.alt })),
-    variants: p.variants
-      .filter((v) => v.is_active === 1)
-      .map((v) => ({
-        id: v.id,
-        optionName: v.option_name,
-        optionValue: v.option_value,
-        price: v.price ?? p.price,
-        available,
-        inStock: available === null || available > 0,
-      })),
-    inStock: available === null ? p.availability !== 'sold-out' : available > 0,
-    available,
+    variants,
+    inStock,
+    available: variants.length > 0 ? null : available,
   }
 }

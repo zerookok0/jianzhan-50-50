@@ -77,7 +77,7 @@ export function Footer() {
           <ul className="site-footer__social" aria-label="Social links">
             {site.social.map((s) => (
               <li key={s.label}>
-                <AppLink href={s.href} className="footer-link footer-link--social" external={s.href.startsWith('http')}>
+                <AppLink href={s.href} className="footer-link footer-link--social">
                   {s.label}
                 </AppLink>
               </li>
@@ -86,8 +86,8 @@ export function Footer() {
         </div>
 
         <p className="site-footer__note">
-          Demo catalogue for presentation purposes. Prices, availability and copy are illustrative;
-          all purchases are completed on our WordPress store.
+          Prices, stock and totals are calculated by our store. Every piece is fired once, so
+          availability can change between visits — the cart re-checks it before payment.
         </p>
       </div>
     </footer>

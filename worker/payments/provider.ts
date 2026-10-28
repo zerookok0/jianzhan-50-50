@@ -161,13 +161,22 @@ export class MockPaymentProvider implements PaymentProvider {
   readonly id = 'mock'
   readonly label = 'Development mock (no real money)'
 
-  constructor(
-    private readonly secret: string,
-    private readonly publicOrigin: string,
-  ) {
+  /**
+   * Fields are declared explicitly rather than as constructor parameter
+   * properties. TypeScript's `private readonly x: T` shorthand is erased by
+   * a compiler, but Node's strip-only type mode refuses to transform it —
+   * and the test suite runs the worker source directly through that loader.
+   * Being explicit keeps the same encapsulation and runs anywhere.
+   */
+  private readonly secret: string
+  private readonly publicOrigin: string
+
+  constructor(secret: string, publicOrigin: string) {
     if (!secret) {
       throw new Error('MockPaymentProvider requires PAYMENT_MOCK_SECRET.')
     }
+    this.secret = secret
+    this.publicOrigin = publicOrigin
   }
 
   getCapabilities(): PaymentCapabilities {
@@ -236,7 +245,7 @@ export class MockPaymentProvider implements PaymentProvider {
       }
     }
 
-    const { hmacSha256Hex, timingSafeEqualString } = await import('../lib/crypto')
+    const { hmacSha256Hex, timingSafeEqualString } = await import('../lib/crypto.ts')
     const expected = await hmacSha256Hex(this.secret, input.rawBody)
     if (!timingSafeEqualString(expected, signature)) {
       return {
