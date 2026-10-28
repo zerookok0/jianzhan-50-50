@@ -1,0 +1,26 @@
+# Local development secrets — DO NOT COMMIT
+#
+# This file is git-ignored. `wrangler dev` reads it automatically.
+# Every value here is a local-only dummy. Production secrets are set with
+#   npx wrangler secret put <NAME> --env production
+# and never exist in the repository.
+
+ENVIRONMENT=development
+
+# 32+ random bytes, base64. Generate with:
+#   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+SESSION_SECRET=local-development-only-not-a-real-secret
+
+# Enables the mock payment provider. It refuses to construct in any
+# environment other than 'development'.
+PAYMENT_MOCK_SECRET=local-mock-signing-secret
+
+# One-time admin bootstrap. Set a throwaway value, call
+# POST /api/v1/admin/bootstrap once, then delete this line.
+ADMIN_BOOTSTRAP_TOKEN=local-bootstrap-token-change-me
+
+# Deliberately left EMPTY. There is no real payment provider yet, and an
+# empty key must fail loudly rather than fall back to a mock.
+# STRIPE_SECRET_KEY=
+# STRIPE_WEBHOOK_SECRET=
+# RESEND_API_KEY=

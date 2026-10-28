@@ -1,0 +1,121 @@
+/* ============================================================
+   JIANZHAN — Refinements
+   Small overrides appended after the page styles.
+   ============================================================ */
+
+/* Enquiry anchor target on the product page */
+#enquiry {
+  scroll-margin-top: calc(var(--header-h) + 24px);
+}
+
+/* Journal list title spacing */
+.journal-more-title {
+  margin-bottom: 32px;
+}
+
+/* Quick view: bottom sheet on phones, centred panel on desktop */
+@media (max-width: 859px) {
+  .modal--center {
+    align-items: flex-end;
+  }
+
+  .modal--center .modal__panel {
+    max-height: 92vh;
+    overflow-y: auto;
+    border-top: 1px solid var(--line);
+    animation: sheetUp 0.45s var(--ease-out) both;
+  }
+
+  .qv {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .qv__media .media {
+    aspect-ratio: 4 / 3 !important;
+  }
+}
+
+@keyframes sheetUp {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+/* Buy notice spacing inside quick view */
+.qv .buy {
+  margin-top: 20px;
+}
+
+.qv .buy__note {
+  font-size: 10.5px;
+}
+
+/* Product meta tags */
+.product-info__meta .tag {
+  min-height: 32px;
+  padding: 6px 12px;
+}
+
+.product-info__meta a.tag:hover {
+  color: var(--ivory);
+  border-color: var(--line-strong);
+}
+
+/* Lightbox safe areas */
+.lightbox__hint {
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+}
+
+/* Keep long product names from overflowing narrow phones */
+.card__name,
+.display,
+.product-info__title {
+  overflow-wrap: anywhere;
+}
+
+/* Focus ring visibility on dark imagery */
+.icon-btn:focus-visible,
+.chip:focus-visible,
+.card__media a:focus-visible,
+.fav-btn:focus-visible {
+  outline: 1px solid var(--bronze);
+  outline-offset: 3px;
+}
+
+/* Reduced motion: keep hover states but drop transforms */
+@media (prefers-reduced-motion: reduce) {
+  .card:hover .card__media .media img,
+  .jcard:hover .media img,
+  .jrow:hover .media img,
+  .craft-gallery figure:hover .media img {
+    transform: none;
+  }
+
+  .hero__bowl-inner {
+    transform: none !important;
+  }
+
+  .hero__bowl-inner img {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Keep the moon and ember glow from pushing the frame lighter on small phones */
+@media (max-width: 640px) {
+  .hero__layer--sky img {
+    object-position: center 58%;
+    filter: saturate(0.5) brightness(0.55) contrast(1.14);
+  }
+
+  .hero__scrim {
+    background:
+      linear-gradient(180deg, rgba(6, 7, 8, 0.72) 0%, rgba(6, 7, 8, 0.18) 24%, rgba(6, 7, 8, 0.34) 56%, rgba(6, 7, 8, 0.92) 100%),
+      linear-gradient(180deg, transparent 40%, rgba(6, 7, 8, 0.5) 100%);
+  }
+}

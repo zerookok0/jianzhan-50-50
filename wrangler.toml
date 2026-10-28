@@ -1,0 +1,83 @@
+name = "jianzhan-api"
+main = "worker/index.ts"
+compatibility_date = "2024-11-06"
+compatibility_flags = ["nodejs_compat"]
+
+# ---------------------------------------------------------------------------
+# D1 — product, cart, order and payment data
+# Create with:  wrangler d1 create jianzhan-db
+# Then paste the returned database_id below.
+# ---------------------------------------------------------------------------
+[[d1_databases]]
+binding = "DB"
+database_name = "jianzhan-db"
+database_id = "REPLACE_WITH_YOUR_D1_ID"
+migrations_dir = "migrations"
+
+# ---------------------------------------------------------------------------
+# R2 — product images and admin uploads
+# Create with:  wrangler r2 bucket create jianzhan-images
+# ---------------------------------------------------------------------------
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "jianzhan-images"
+
+# ---------------------------------------------------------------------------
+# Default (development) vars.
+# Override per environment with `wrangler secret put` for anything secret.
+# ---------------------------------------------------------------------------
+[vars]
+ENVIRONMENT = "development"
+APP_ORIGIN = "http://localhost:5173"
+ALLOWED_ORIGINS = "http://localhost:5173"
+DEFAULT_CURRENCY = "USD"
+ORDER_RESERVATION_MINUTES = "30"
+CART_TTL_DAYS = "30"
+
+[observability]
+enabled = true
+
+# ---------------------------------------------------------------------------
+# Cron: release expired stock reservations, expire unpaid orders,
+# prune sessions and rate-limit rows.
+# ---------------------------------------------------------------------------
+[triggers]
+crons = ["*/5 * * * *"]
+
+# ---------------------------------------------------------------------------
+# Preview environment
+# Deploy with:  wrangler deploy --env preview
+# ---------------------------------------------------------------------------
+[env.preview]
+vars = { ENVIRONMENT = "preview", APP_ORIGIN = "https://preview.example.com", ALLOWED_ORIGINS = "https://preview.example.com,https://*.jianzhan.pages.dev", DEFAULT_CURRENCY = "USD", ORDER_RESERVATION_MINUTES = "30", CART_TTL_DAYS = "30" }
+
+[[env.preview.d1_databases]]
+binding = "DB"
+database_name = "jianzhan-db-preview"
+database_id = "REPLACE_WITH_PREVIEW_D1_ID"
+migrations_dir = "migrations"
+
+[[env.preview.r2_buckets]]
+binding = "IMAGES"
+bucket_name = "jianzhan-images-preview"
+
+# ---------------------------------------------------------------------------
+# Production
+# Deploy with:  wrangler deploy --env production
+# Secrets MUST be set with:  wrangler secret put <NAME> --env production
+# ---------------------------------------------------------------------------
+[env.production]
+vars = { ENVIRONMENT = "production", APP_ORIGIN = "https://www.example.com", ALLOWED_ORIGINS = "https://www.example.com", DEFAULT_CURRENCY = "USD", ORDER_RESERVATION_MINUTES = "30", CART_TTL_DAYS = "30" }
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "jianzhan-db"
+database_id = "REPLACE_WITH_YOUR_D1_ID"
+migrations_dir = "migrations"
+
+[[env.production.r2_buckets]]
+binding = "IMAGES"
+bucket_name = "jianzhan-images"
+
+[env.production.triggers]
+crons = ["*/5 * * * *"]
