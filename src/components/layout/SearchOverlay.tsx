@@ -1,27 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { products, formatPrice } from '../../data/products'
 import { posts } from '../../data/posts'
-import { useCatalogue } from '../../lib/catalogue'
-import { formatMinor } from '../../lib/api/client'
 import { useEscape, useScrollLock } from '../../lib/hooks'
 import { navigate } from '../../lib/hooks'
 import { Close, Search } from '../ui/Icons'
-import { ProductImage } from '../ui/Media'
+import { MediaImage } from '../ui/Media'
 
 interface SearchOverlayProps {
   open: boolean
   onClose: () => void
 }
 
-/**
- * Lightweight client-side search across pieces and journal entries.
- *
- * It searches the catalogue already loaded by the provider rather than
- * firing a request per keystroke: the collection is small, and a search
- * box that debounces against the network feels broken on a slow link.
- * The catalogue's own `search` parameter exists for when it outgrows this.
- */
+/** Lightweight client-side search across pieces and journal entries. */
 export function SearchOverlay({ open, onClose }: SearchOverlayProps) {
-  const { products } = useCatalogue()
   const [query, setQuery] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
   useScrollLock(open)
@@ -41,13 +32,10 @@ export function SearchOverlay({ open, onClose }: SearchOverlayProps) {
     if (!q) return products.slice(0, 3)
     return products
       .filter((p) =>
-        [p.name, p.subtitle, p.glaze, p.description, p.category, p.sku]
-          .join(' ')
-          .toLowerCase()
-          .includes(q),
+        [p.name, p.subtitle, p.glaze, p.description, p.category].join(' ').toLowerCase().includes(q),
       )
       .slice(0, 5)
-  }, [q, products])
+  }, [q])
 
   const postHits = useMemo(() => {
     if (!q) return []
@@ -76,11 +64,7 @@ export function SearchOverlay({ open, onClose }: SearchOverlayProps) {
 
       <div className="search__results">
         <p className="eyebrow">{q ? 'Pieces' : 'Selected pieces'}</p>
-        {productHits.length === 0 && (
-          <p className="search__empty">
-            {products.length === 0 ? 'The catalogue is still loading.' : `No pieces match “${query}”.`}
-          </p>
-        )}
+        {productHits.length === 0 && <p className="search__empty">No pieces match “{query}”.</p>}
         <ul className="search__list">
           {productHits.map((p) => (
             <li key={p.id}>
@@ -92,20 +76,12 @@ export function SearchOverlay({ open, onClose }: SearchOverlayProps) {
                   navigate(`/collection/${p.slug}`)
                 }}
               >
-                <ProductImage
-                  src={p.images[0]}
-                  alt=""
-                  ratio={1}
-                  sizes="56px"
-                  className="search__thumb"
-                />
+                <MediaImage image={p.images[0]} alt="" ratio={1} sizes="56px" className="search__thumb" />
                 <span className="search__item-text">
                   <span className="search__item-name">{p.name}</span>
                   <span className="search__item-sub">{p.subtitle}</span>
                 </span>
-                <span className="search__item-price">
-                  {formatMinor(p.fromPrice, p.currency, p.minorUnit)}
-                </span>
+                <span className="search__item-price">{formatPrice(p.price, p.currency)}</span>
               </button>
             </li>
           ))}

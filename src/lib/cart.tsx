@@ -7,249 +7,190 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import {
-  ApiError,
-  addCartItem,
-  applyCoupon as apiApplyCoupon,
-  getCart,
-  removeCartItem,
-  removeCoupon as apiRemoveCoupon,
-  updateCartItem,
-  updateDestination,
-  type ApiCart,
-} from './api/client'
-import { storeEnabled } from '../config/store'
+import { img } from '../data/images'
+import type { Product, Variant } from '../data/types'
 
 /**
- * CART PROVIDER
+ * CART
  * ------------------------------------------------------------------
- * Holds the server's cart verbatim. There is no client-side price
- * arithmetic anywhere: every mutation replaces the whole `cart` object
- * with what the server returned.
+ * A presentation-only cart. It holds a shopping list in this browser
+ * (localStorage) and nothing else: no prices are authoritative, no stock
+ * is checked, no order is created. The store does all of that.
  *
- * In `demo` mode this provider is inert — no network, no cart UI.
+ * A line is keyed by wooId + variationId so the same piece in two sizes
+ * stays as two lines, while repeat adds merge into one.
  */
 
-export interface CartState {
-  cart: ApiCart | null
-  loading: boolean
-  busyKey: string | null
-  error: string | null
-  couponError: string | null
-  drawerOpen: boolean
-  itemCount: number
-  refresh: () => Promise<void>
-  add: (input: { productId: string; variantId?: string | null; quantity?: number }) => Promise<boolean>
-  setQuantity: (itemId: string, quantity: number) => Promise<void>
-  remove: (itemId: string) => Promise<void>
-  applyCoupon: (code: string) => Promise<boolean>
-  removeCoupon: (code: string) => Promise<void>
-  setDestination: (input: { country?: string; region?: string; postcode?: string; email?: string }) => Promise<void>
-  openDrawer: () => void
-  closeDrawer: () => void
-  clearError: () => void
-  clearCouponError: () => void
+export interface CartLine {
+  key: string
+  productId: string
+  wooId: number
+  variationId?: number
+  variantLabel?: string
+  name: string
+  slug: string
+  price: number
+  currency: string
+  image: string
+  qty: number
 }
 
-const CartContext = createContext<CartState | null>(null)
+export type AddItemResult = 'added' | 'no-store-id' | 'no-variation' | 'unavailable'
+
+interface CartContextValue {
+  lines: CartLine[]
+  isOpen: boolean
+  count: number
+  subtotal: number
+  currency: string
+  openCart: () => void
+  closeCart: () => void
+  addItem: (product: Product, options?: { variant?: Variant; qty?: number }) => AddItemResult
+  setQty: (key: string, qty: number) => void
+  removeItem: (key: string) => void
+  clear: () => void
+}
+
+const STORAGE_KEY = 'jianzhan.cart.v1'
+const MAX_QTY = 99
+
+const CartContext = createContext<CartContextValue | null>(null)
+
+function clampQty(qty: number): number {
+  const n = Math.floor(Number(qty))
+  if (!Number.isFinite(n)) return 1
+  return Math.min(MAX_QTY, Math.max(1, n))
+}
+
+/** Stored data can be stale or hand-edited, so every line is re-checked. */
+function isCartLine(value: unknown): value is CartLine {
+  if (!value || typeof value !== 'object') return false
+  const line = value as Partial<CartLine>
+  return (
+    typeof line.key === 'string' &&
+    typeof line.productId === 'string' &&
+    Number.isInteger(line.wooId) &&
+    typeof line.name === 'string' &&
+    typeof line.slug === 'string' &&
+    typeof line.price === 'number' &&
+    typeof line.image === 'string' &&
+    Number.isInteger(line.qty) &&
+    (line.qty ?? 0) > 0
+  )
+}
+
+function readStoredLines(): CartLine[] {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY)
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter(isCartLine) : []
+  } catch {
+    return []
+  }
+}
 
 export function CartProvider({ children }: { children: ReactNode }) {
-  const enabled = storeEnabled()
-
-  const [cart, setCart] = useState<ApiCart | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [busyKey, setBusyKey] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [couponError, setCouponError] = useState<string | null>(null)
-  const [drawerOpen, setDrawerOpen] = useState(false)
-
-  const describe = (err: unknown): string =>
-    err instanceof ApiError ? err.message : 'Something went wrong. Please try again.'
-
-  const refresh = useCallback(async () => {
-    if (!enabled) return
-    setLoading(true)
-    try {
-      const { cart: next } = await getCart()
-      setCart(next)
-      setError(null)
-    } catch (err) {
-      // An empty/expired session is not worth shouting about.
-      if (err instanceof ApiError && err.status !== 0) setError(describe(err))
-    } finally {
-      setLoading(false)
-    }
-  }, [enabled])
+  const [lines, setLines] = useState<CartLine[]>(() =>
+    typeof window === 'undefined' ? [] : readStoredLines(),
+  )
+  const [isOpen, setIsOpen] = useState(false)
 
   useEffect(() => {
-    if (!enabled) return
-    void refresh()
-  }, [enabled, refresh])
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(lines))
+    } catch {
+      /* storage may be unavailable (private mode) — the session still works */
+    }
+  }, [lines])
 
-  const add = useCallback<CartState['add']>(
-    async (input) => {
-      if (!enabled) return false
-      setBusyKey(input.productId)
-      setError(null)
-      try {
-        const { cart: next } = await addCartItem(input)
-        setCart(next)
-        setDrawerOpen(true)
-        return true
-      } catch (err) {
-        setError(describe(err))
-        return false
-      } finally {
-        setBusyKey(null)
+  /* Another tab added or removed something: keep this one honest. */
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY) setLines(readStoredLines())
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+
+  const openCart = useCallback(() => setIsOpen(true), [])
+  const closeCart = useCallback(() => setIsOpen(false), [])
+
+  const addItem = useCallback<CartContextValue['addItem']>((product, options = {}) => {
+    const { variant, qty = 1 } = options
+
+    if (product.availability === 'sold-out' || product.availability === 'enquire') return 'unavailable'
+    if (!product.wooId) return 'no-store-id'
+    if (variant && !variant.wooVariationId) return 'no-variation'
+
+    const wooId = product.wooId
+    const variationId = variant?.wooVariationId
+    const key = `${wooId}:${variationId ?? 0}`
+    const amount = clampQty(qty)
+
+    setLines((current) => {
+      const existing = current.some((line) => line.key === key)
+      if (existing) {
+        return current.map((line) =>
+          line.key === key ? { ...line, qty: clampQty(line.qty + amount) } : line,
+        )
       }
-    },
-    [enabled],
-  )
+      return [
+        ...current,
+        {
+          key,
+          productId: product.id,
+          wooId,
+          variationId,
+          variantLabel: variant?.label,
+          name: product.name,
+          slug: product.slug,
+          price: product.price,
+          currency: product.currency,
+          image: img(product.images[0], 480),
+          qty: amount,
+        },
+      ]
+    })
 
-  const setQuantity = useCallback<CartState['setQuantity']>(
-    async (itemId, quantity) => {
-      if (!enabled) return
-      setBusyKey(itemId)
-      setError(null)
-      try {
-        const { cart: next } =
-          quantity <= 0 ? await removeCartItem(itemId) : await updateCartItem(itemId, quantity)
-        setCart(next)
-      } catch (err) {
-        setError(describe(err))
-      } finally {
-        setBusyKey(null)
-      }
-    },
-    [enabled],
-  )
+    return 'added'
+  }, [])
 
-  const remove = useCallback<CartState['remove']>(
-    async (itemId) => {
-      if (!enabled) return
-      setBusyKey(itemId)
-      setError(null)
-      try {
-        const { cart: next } = await removeCartItem(itemId)
-        setCart(next)
-      } catch (err) {
-        setError(describe(err))
-      } finally {
-        setBusyKey(null)
-      }
-    },
-    [enabled],
-  )
+  const setQty = useCallback((key: string, qty: number) => {
+    setLines((current) =>
+      current.map((line) => (line.key === key ? { ...line, qty: clampQty(qty) } : line)),
+    )
+  }, [])
 
-  const applyCoupon = useCallback<CartState['applyCoupon']>(
-    async (code) => {
-      if (!enabled) return false
-      setCouponError(null)
-      try {
-        const { cart: next } = await apiApplyCoupon(code.trim())
-        setCart(next)
-        return true
-      } catch (err) {
-        setCouponError(describe(err))
-        return false
-      }
-    },
-    [enabled],
-  )
+  const removeItem = useCallback((key: string) => {
+    setLines((current) => current.filter((line) => line.key !== key))
+  }, [])
 
-  const removeCoupon = useCallback<CartState['removeCoupon']>(
-    async (code) => {
-      if (!enabled) return
-      setCouponError(null)
-      try {
-        const { cart: next } = await apiRemoveCoupon(code)
-        setCart(next)
-      } catch (err) {
-        setCouponError(describe(err))
-      }
-    },
-    [enabled],
-  )
+  const clear = useCallback(() => setLines([]), [])
 
-  const setDestination = useCallback<CartState['setDestination']>(
-    async (input) => {
-      if (!enabled) return
-      setError(null)
-      try {
-        const { cart: next } = await updateDestination(input)
-        setCart(next)
-      } catch (err) {
-        setError(describe(err))
-      }
-    },
-    [enabled],
-  )
-
-  const value = useMemo<CartState>(
-    () => ({
-      cart,
-      loading,
-      busyKey,
-      error,
-      couponError,
-      drawerOpen,
-      itemCount: cart?.itemCount ?? 0,
-      refresh,
-      add,
-      setQuantity,
-      remove,
-      applyCoupon,
-      removeCoupon,
-      setDestination,
-      openDrawer: () => setDrawerOpen(true),
-      closeDrawer: () => setDrawerOpen(false),
-      clearError: () => setError(null),
-      clearCouponError: () => setCouponError(null),
-    }),
-    [
-      cart,
-      loading,
-      busyKey,
-      error,
-      couponError,
-      drawerOpen,
-      refresh,
-      add,
-      setQuantity,
-      remove,
-      applyCoupon,
-      removeCoupon,
-      setDestination,
-    ],
-  )
+  const value = useMemo<CartContextValue>(() => {
+    const count = lines.reduce((total, line) => total + line.qty, 0)
+    const subtotal = lines.reduce((total, line) => total + line.price * line.qty, 0)
+    return {
+      lines,
+      isOpen,
+      count,
+      subtotal,
+      currency: lines[0]?.currency ?? 'USD',
+      openCart,
+      closeCart,
+      addItem,
+      setQty,
+      removeItem,
+      clear,
+    }
+  }, [lines, isOpen, addItem, clear, closeCart, openCart, removeItem, setQty])
 
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>
 }
 
-/** Inert fallback so components render outside a provider. */
-function inertCart(): CartState {
-  return {
-    cart: null,
-    loading: false,
-    busyKey: null,
-    error: null,
-    couponError: null,
-    drawerOpen: false,
-    itemCount: 0,
-    refresh: async () => {},
-    add: async () => false,
-    setQuantity: async () => {},
-    remove: async () => {},
-    applyCoupon: async () => false,
-    removeCoupon: async () => {},
-    setDestination: async () => {},
-    openDrawer: () => {},
-    closeDrawer: () => {},
-    clearError: () => {},
-    clearCouponError: () => {},
-  }
-}
-
-export function useCart(): CartState {
-  return useContext(CartContext) ?? inertCart()
+export function useCart(): CartContextValue {
+  const context = useContext(CartContext)
+  if (!context) throw new Error('useCart must be used inside CartProvider')
+  return context
 }

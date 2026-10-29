@@ -1,215 +1,103 @@
 import type { SVGProps } from 'react'
 
-/**
- * ICONS
- * ------------------------------------------------------------------
- * Hand-drawn 24×24 line icons on a 1.25 stroke. No icon font, no sprite
- * request: they inherit `currentColor`, so a button's colour transition
- * moves the icon with it.
- *
- * Decorative by default. Pass a `title` only when the icon carries meaning
- * on its own; otherwise the surrounding control supplies the label.
- */
-
-export interface IconProps extends SVGProps<SVGSVGElement> {
-  /** Accessible name. Omit for icons inside an already-labelled control. */
-  title?: string
-  size?: number
+const base: SVGProps<SVGSVGElement> = {
+  width: 16,
+  height: 16,
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 1.2,
+  strokeLinecap: 'square',
+  strokeLinejoin: 'miter',
+  'aria-hidden': true,
+  focusable: false,
 }
 
-function Icon({
-  title,
-  size = 16,
-  children,
-  ...props
-}: IconProps & { children: React.ReactNode }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.25}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden={title ? undefined : true}
-      role={title ? 'img' : undefined}
-      focusable="false"
-      {...props}
-    >
-      {title ? <title>{title}</title> : null}
-      {children}
-    </svg>
-  )
-}
+export const ArrowRight = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base} {...p}>
+    <path d="M3 12h17M14 5.5 20.5 12 14 18.5" />
+  </svg>
+)
 
-/* ---------------- Navigation ---------------- */
+export const ArrowDown = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base} {...p}>
+    <path d="M12 3v18M5.5 14.5 12 21l6.5-6.5" />
+  </svg>
+)
 
-export function ArrowRight(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M4 12h15" />
-      <path d="M13 6l6 6-6 6" />
-    </Icon>
-  )
-}
+export const ArrowUpRight = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base} {...p}>
+    <path d="M6 18 18 6M8 6h10v10" />
+  </svg>
+)
 
-export function ArrowLeft(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M20 12H5" />
-      <path d="M11 18l-6-6 6-6" />
-    </Icon>
-  )
-}
+export const Heart = ({ filled, ...p }: SVGProps<SVGSVGElement> & { filled?: boolean }) => (
+  <svg {...base} {...p} fill={filled ? 'currentColor' : 'none'}>
+    <path d="M12 20s-7.2-4.6-9-9.1C1.8 7.4 3.8 4.5 6.9 4.5c2 0 3.6 1.2 5.1 3.1 1.5-1.9 3.1-3.1 5.1-3.1 3.1 0 5.1 2.9 3.9 6.4-1.8 4.5-9 9.1-9 9.1Z" />
+  </svg>
+)
 
-export function ArrowDown(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M12 4v15" />
-      <path d="M6 13l6 6 6-6" />
-    </Icon>
-  )
-}
+export const Plus = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base} {...p}>
+    <path d="M12 4v16M4 12h16" />
+  </svg>
+)
 
-/** A slow vertical drift used as the hero's scroll cue. */
-export function ScrollIndicator({ size = 18, ...props }: IconProps) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width={size}
-      height={size}
-      viewBox="0 0 24 40"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1}
-      strokeLinecap="round"
-      aria-hidden="true"
-      focusable="false"
-      {...props}
-    >
-      <path d="M12 1v30" opacity="0.35" />
-      <path d="M6 26l6 7 6-7" />
-    </svg>
-  )
-}
+export const Minus = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base} {...p}>
+    <path d="M4 12h16" />
+  </svg>
+)
 
-/* ---------------- Commerce ---------------- */
+export const Close = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base} {...p}>
+    <path d="M5 5l14 14M19 5 5 19" />
+  </svg>
+)
 
-export function Bag(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M4.5 8h15l-1 12.5h-13L4.5 8z" />
-      <path d="M9 8V6a3 3 0 0 1 6 0v2" />
-    </Icon>
-  )
-}
+export const Menu = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base} {...p}>
+    <path d="M3 7h18M3 12h18M3 17h18" />
+  </svg>
+)
 
-export function Heart({ filled = false, ...props }: IconProps & { filled?: boolean }) {
-  return (
-    <Icon {...props} fill={filled ? 'currentColor' : 'none'}>
-      <path d="M12 20s-7.5-4.6-7.5-9.4A4.1 4.1 0 0 1 12 7.6a4.1 4.1 0 0 1 7.5 3c0 4.8-7.5 9.4-7.5 9.4z" />
-    </Icon>
-  )
-}
+export const Expand = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base} {...p}>
+    <path d="M4 9V4h5M20 15v5h-5M20 9V4h-5M4 15v5h5" />
+  </svg>
+)
 
-export function Plus(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M12 5v14" />
-      <path d="M5 12h14" />
-    </Icon>
-  )
-}
+export const Search = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base} {...p}>
+    <circle cx="11" cy="11" r="6.5" />
+    <path d="m16 16 4.5 4.5" />
+  </svg>
+)
 
-export function Minus(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M5 12h14" />
-    </Icon>
-  )
-}
+export const Cart = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base} {...p}>
+    <path d="M3 4h2.4l2.3 10.6h10.1M6.4 8.4h13.2l-1.5 6.2" />
+    <circle cx="9" cy="19" r="1.4" />
+    <circle cx="17.4" cy="19" r="1.4" />
+  </svg>
+)
 
-/* ---------------- Controls ---------------- */
+export const Check = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base} {...p}>
+    <path d="m4.5 12.5 5 5L20 6.5" />
+  </svg>
+)
 
-export function Close(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M6 6l12 12" />
-      <path d="M18 6L6 18" />
-    </Icon>
-  )
-}
+export const Info = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base} {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 11v6M12 7.6v.9" />
+  </svg>
+)
 
-export function Search(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <circle cx="11" cy="11" r="6.5" />
-      <path d="M16 16l4.5 4.5" />
-    </Icon>
-  )
-}
-
-export function Expand(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M9 4H4v5" />
-      <path d="M15 4h5v5" />
-      <path d="M15 20h5v-5" />
-      <path d="M9 20H4v-5" />
-    </Icon>
-  )
-}
-
-export function ZoomIn(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <circle cx="11" cy="11" r="6.5" />
-      <path d="M16 16l4.5 4.5" />
-      <path d="M11 8v6" />
-      <path d="M8 11h6" />
-    </Icon>
-  )
-}
-
-export function ZoomOut(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <circle cx="11" cy="11" r="6.5" />
-      <path d="M16 16l4.5 4.5" />
-      <path d="M8 11h6" />
-    </Icon>
-  )
-}
-
-/* ---------------- Status ---------------- */
-
-export function Check(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M5 12.5l4.5 4.5L19 7" />
-    </Icon>
-  )
-}
-
-export function Info(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <circle cx="12" cy="12" r="8.5" />
-      <path d="M12 11v5" />
-      <path d="M12 8h.01" />
-    </Icon>
-  )
-}
-
-export function Alert(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M12 4.5l8 14.5H4l8-14.5z" />
-      <path d="M12 10v4.5" />
-      <path d="M12 17h.01" />
-    </Icon>
-  )
-}
+export const ScrollIndicator = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base} viewBox="0 0 24 40" width={18} height={30} {...p}>
+    <rect x="1" y="1" width="22" height="38" rx="11" />
+    <path d="M12 8v8" strokeLinecap="round" />
+  </svg>
+)

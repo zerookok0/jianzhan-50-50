@@ -3,18 +3,8 @@ import type { Product, GlazeId, CategoryId } from './types'
 /**
  * DEMO CATALOGUE
  * Prices, availability and copy are illustrative only — nothing here is
- * live data. Replace the objects below with your real pieces.
- *
- * WOOCOMMERCE MAPPING
- * -------------------
- * wooId          → numeric product ID in WordPress
- *                  (WooCommerce → Products; the ID shows in the row
- *                  action "ID: 123", or in the edit URL post=123)
- * wooVariationId → per-size variation ID for variable products
- *
- * Fill these in and set enabled: true in src/data/store.ts to switch the
- * site from "catalogue" to "live cart". Until then both stay null and the
- * buy button explains that the piece is unmapped rather than failing.
+ * live data. Replace the objects below with your real pieces and paste the
+ * matching WooCommerce URL into `purchaseUrl`.
  */
 
 export const products: Product[] = [
@@ -38,6 +28,8 @@ export const products: Product[] = [
       { label: 'Body', value: 'Iron-rich stoneware' },
       { label: 'Firing', value: 'Wood-fired, 1300 °C' },
     ],
+    purchaseUrl: null,
+    wooId: 2472,
     featured: true,
     availability: 'available',
     year: '2024',
@@ -62,6 +54,8 @@ export const products: Product[] = [
       { label: 'Body', value: 'Iron-rich stoneware' },
       { label: 'Firing', value: 'Wood-fired, 1300 °C' },
     ],
+    purchaseUrl: null,
+    wooId: 2465,
     featured: true,
     availability: 'available',
     year: '2024',
@@ -86,9 +80,10 @@ export const products: Product[] = [
       { label: 'Body', value: 'Iron-rich stoneware' },
       { label: 'Firing', value: 'Wood-fired, 1310 °C' },
     ],
+    purchaseUrl: null,
     variants: [
-      { id: 'jz-03-a', label: 'Small — 12.6 cm' },
-      { id: 'jz-03-b', label: 'Large — 14.2 cm' },
+      { id: 'jz-03-a', label: 'Small — 12.6 cm', purchaseUrl: null },
+      { id: 'jz-03-b', label: 'Large — 14.2 cm', purchaseUrl: null },
     ],
     featured: true,
     availability: 'made-to-order',
@@ -114,6 +109,8 @@ export const products: Product[] = [
       { label: 'Body', value: 'Stoneware with iron slip' },
       { label: 'Firing', value: 'Reduction, 1280 °C' },
     ],
+    purchaseUrl: null,
+    wooId: 2461,
     featured: true,
     availability: 'available',
     year: '2024',
@@ -138,6 +135,7 @@ export const products: Product[] = [
       { label: 'Body', value: 'Stoneware' },
       { label: 'Firing', value: 'Reduction, 1260 °C' },
     ],
+    purchaseUrl: null,
     featured: false,
     availability: 'available',
     year: '2023',
@@ -162,6 +160,7 @@ export const products: Product[] = [
       { label: 'Body', value: 'Iron-rich stoneware' },
       { label: 'Presentation', value: 'Linen-wrapped box' },
     ],
+    purchaseUrl: null,
     featured: true,
     availability: 'made-to-order',
     year: '2025',
@@ -186,6 +185,7 @@ export const products: Product[] = [
       { label: 'Body', value: 'Stoneware' },
       { label: 'Firing', value: 'Wood-fired, 1290 °C' },
     ],
+    purchaseUrl: null,
     featured: false,
     availability: 'enquire',
     year: '2024',
@@ -210,6 +210,7 @@ export const products: Product[] = [
       { label: 'Body', value: 'Iron-rich stoneware' },
       { label: 'Firing', value: 'Wood-fired, 1310 °C' },
     ],
+    purchaseUrl: null,
     featured: false,
     availability: 'sold-out',
     year: '2023',
@@ -234,6 +235,7 @@ export const products: Product[] = [
       { label: 'Body', value: 'Iron-rich stoneware' },
       { label: 'Firing', value: 'Wood-fired, 1300 °C' },
     ],
+    purchaseUrl: null,
     featured: false,
     availability: 'available',
     year: '2025',

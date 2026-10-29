@@ -1,203 +1,122 @@
-import { useEffect, useState, type ReactNode, type MouseEvent } from 'react'
+import { useState, type MouseEvent, type ReactNode } from 'react'
 import { img, srcSet, type ImageKey } from '../../data/images'
-import { navigate } from '../../lib/hooks'
+import { navigate, toHref } from '../../lib/hooks'
+
+interface MediaProps {
+  image: ImageKey
+  alt: string
+  /** Aspect ratio as width / height, e.g. 3/4 */
+  ratio?: number
+  sizes?: string
+  priority?: boolean
+  className?: string
+  imgClassName?: string
+  overlay?: ReactNode
+  /** Show the source path when the file cannot be loaded */
+  showFallbackNote?: boolean
+}
 
 /**
- * MEDIA & LINKS
- * ------------------------------------------------------------------
- * Two rules made explicit here:
- *
- *   • Images come from the central library in `src/data/images.ts`, so a
- *     swap happens in one file rather than across components.
- *   • Every image reserves its box via `ratio`, so nothing shifts while
- *     loading. A failed image shows a labelled fallback instead of a
- *     broken icon — a gallery that silently gapes is worse than one that
- *     admits the photo is missing.
+ * Responsive image with a gentle fade-in and a visible fallback if the
+ * photo cannot be loaded (so a missing asset is obvious, never silent).
  */
+export function MediaImage({
+  image,
+  alt,
+  ratio = 3 / 4,
+  sizes = '100vw',
+  priority = false,
+  className = '',
+  imgClassName = '',
+  overlay,
+  showFallbackNote = false,
+}: MediaProps) {
+  const [loaded, setLoaded] = useState(false)
+  const [errored, setErrored] = useState(false)
 
-/* ------------------------------------------------------------------ */
-/* AppLink                                                             */
-/* ------------------------------------------------------------------ */
+  return (
+    <div
+      className={`media media--reveal ${loaded ? 'is-loaded' : ''} ${errored ? 'is-error' : ''} ${className}`}
+      style={{ aspectRatio: String(ratio) }}
+    >
+      {!errored && (
+        <img
+          src={img(image, priority ? 1600 : 1200)}
+          srcSet={srcSet(image) || undefined}
+          sizes={sizes}
+          alt={alt}
+          loading={priority ? 'eager' : 'lazy'}
+          decoding={priority ? 'sync' : 'async'}
+          fetchPriority={priority ? 'high' : 'auto'}
+          width={1200}
+          height={Math.round(1200 / ratio)}
+          onLoad={() => setLoaded(true)}
+          onError={() => setErrored(true)}
+          className={imgClassName}
+        />
+      )}
+      <div className="media__fallback" aria-hidden={!errored}>
+        <span>Image unavailable</span>
+        {showFallbackNote && <code>src/data/images.ts → {image}</code>}
+      </div>
+      {overlay}
+    </div>
+  )
+}
 
 interface AppLinkProps {
   href: string
   children: ReactNode
   className?: string
-  ariaLabel?: string
   onClick?: () => void
-  'data-delay'?: string | number
+  ariaLabel?: string
+  /** Force normal browser navigation (needed for WordPress checkout) */
+  external?: boolean
+  title?: string
 }
 
 /**
- * Internal navigation that does not reload the page. External links keep
- * native behaviour (and get the correct rel attributes).
+ * Internal links are handled by the lightweight router; external links use
+ * ordinary browser navigation so WordPress receives the visitor normally.
  */
 export function AppLink({
   href,
   children,
   className,
-  ariaLabel,
   onClick,
-  ...rest
+  ariaLabel,
+  external,
+  title,
 }: AppLinkProps) {
-  const external = /^(https?:)?\/\//.test(href) || href.startsWith('mailto:') || href.startsWith('tel:')
+  const isExternal =
+    external ||
+    /^https?:\/\//i.test(href) ||
+    href.startsWith('mailto:') ||
+    href.startsWith('tel:')
 
-  if (external) {
-    return (
-      <a
-        href={href}
-        className={className}
-        aria-label={ariaLabel}
-        onClick={onClick}
-        rel="noopener noreferrer"
-        target={href.startsWith('http') ? '_blank' : undefined}
-        {...rest}
-      >
-        {children}
-      </a>
-    )
-  }
-
-  const handleClick = (e: MouseEvent<HTMLAnchorElement>) => {
-    // Preserve modifier clicks and middle clicks so new tabs still work.
+  const handle = (e: MouseEvent<HTMLAnchorElement>) => {
+    if (isExternal) {
+      onClick?.()
+      return
+    }
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
-    onClick?.()
-    // A plain '#anchor' stays in-page.
-    if (href.startsWith('#')) return
     e.preventDefault()
+    onClick?.()
     navigate(href)
   }
 
   return (
-    <a href={href} className={className} aria-label={ariaLabel} onClick={handleClick} {...rest}>
+    <a
+      href={isExternal ? href : toHref(href)}
+      className={className}
+      onClick={handle}
+      aria-label={ariaLabel}
+      title={title}
+      {...(isExternal && href.startsWith('http')
+        ? { target: '_blank', rel: 'noopener noreferrer' }
+        : {})}
+    >
       {children}
     </a>
-  )
-}
-
-/* ------------------------------------------------------------------ */
-/* MediaImage                                                          */
-/* ------------------------------------------------------------------ */
-
-interface MediaImageProps {
-  image: ImageKey
-  alt: string
-  /** width / height. Reserves the box so layout does not shift. */
-  ratio?: number
-  sizes?: string
-  priority?: boolean
-  className?: string
-  /** Show the image key in the fallback, as a note to the editor. */
-  showFallbackNote?: boolean
-  width?: number
-}
-
-export function MediaImage({
-  image,
-  alt,
-  ratio = 4 / 5,
-  sizes = '100vw',
-  priority = false,
-  className = '',
-  showFallbackNote = false,
-}: MediaImageProps) {
-  const [loaded, setLoaded] = useState(false)
-  const [failed, setFailed] = useState(false)
-
-  const baseWidth = 1200
-  const src = img(image, baseWidth)
-
-  return (
-    <div
-      className={`media media--reveal ${loaded ? 'is-loaded' : ''} ${
-        failed ? 'is-error' : ''
-      } ${className}`}
-      style={{ aspectRatio: String(ratio) }}
-    >
-      {!failed && (
-        <img
-          src={src}
-          srcSet={srcSet(image)}
-          sizes={sizes}
-          alt={alt}
-          loading={priority ? 'eager' : 'lazy'}
-          decoding={priority ? 'sync' : 'async'}
-          fetchPriority={priority ? 'high' : 'auto'}
-          onLoad={() => setLoaded(true)}
-          onError={() => setFailed(true)}
-        />
-      )}
-
-      <div className="media__fallback">
-        <span>{alt || 'Image unavailable'}</span>
-        {showFallbackNote && <code>{image}</code>}
-      </div>
-    </div>
-  )
-}
-
-/* ------------------------------------------------------------------ */
-/* ProductImage — absolute URL                                         */
-/* ------------------------------------------------------------------ */
-
-interface ProductImageProps {
-  /** Absolute URL as returned by the catalogue API. */
-  src: string | undefined
-  alt: string
-  ratio?: number
-  sizes?: string
-  priority?: boolean
-  className?: string
-}
-
-/**
- * Why this exists alongside MediaImage: catalogue records carry absolute
- * URLs from D1 (or the CDN), not keys into the local image library. The
- * loading and failure behaviour is deliberately identical, so a photo
- * that 404s looks the same whichever source it came from — a labelled
- * fallback rather than a broken icon.
- */
-export function ProductImage({
-  src,
-  alt,
-  ratio = 4 / 5,
-  sizes = '100vw',
-  priority = false,
-  className = '',
-}: ProductImageProps) {
-  const [loaded, setLoaded] = useState(false)
-  const [failed, setFailed] = useState(false)
-
-  // Reset the states when the source changes, so a stale "failed" flag
-  // cannot hide a perfectly good second image.
-  useEffect(() => {
-    setLoaded(false)
-    setFailed(false)
-  }, [src])
-
-  return (
-    <div
-      className={`media media--reveal ${loaded ? 'is-loaded' : ''} ${
-        failed || !src ? 'is-error' : ''
-      } ${className}`}
-      style={{ aspectRatio: String(ratio) }}
-    >
-      {src && !failed && (
-        <img
-          src={src}
-          alt={alt}
-          sizes={sizes}
-          loading={priority ? 'eager' : 'lazy'}
-          decoding={priority ? 'sync' : 'async'}
-          fetchPriority={priority ? 'high' : 'auto'}
-          onLoad={() => setLoaded(true)}
-          onError={() => setFailed(true)}
-        />
-      )}
-
-      <div className="media__fallback">
-        <span>{alt || 'Image unavailable'}</span>
-      </div>
-    </div>
   )
 }

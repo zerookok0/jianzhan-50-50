@@ -16,6 +16,10 @@ export const site = {
   hours: 'Mon – Fri, 9:00 – 18:00 (GMT+8)',
   /** Replace with your live domain */
   url: 'https://www.example.com',
+  /** WordPress / WooCommerce store. All buying happens there. */
+  shopBaseUrl: 'https://shop.example.com',
+  /** If set, product purchaseUrl falls back to `${shopBaseUrl}/product/${slug}` */
+  autoDerivePurchaseUrl: true,
   currency: 'USD',
   social: [
     { label: 'Instagram', href: '#' },
@@ -39,5 +43,4 @@ export const navigation = [
   { label: 'About', href: '/about' },
 ] as const
 
-export const announcement =
-  'Free shipping on US orders over $500 · Every piece is fired once and never repeated'
+export const announcement = 'Demo catalogue — prices and availability are illustrative. Checkout is completed on our WordPress store.'

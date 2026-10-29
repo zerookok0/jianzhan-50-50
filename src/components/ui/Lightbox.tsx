@@ -1,166 +1,172 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { img, srcSet, type ImageKey } from '../../data/images'
 import { useEscape, useScrollLock } from '../../lib/hooks'
-import { Close, ArrowLeft, ArrowRight, ZoomIn, ZoomOut } from './Icons'
-
-/**
- * LIGHTBOX
- * ------------------------------------------------------------------
- * Full-screen image viewer for a product gallery.
- *
- * Deliberately built rather than pulled from a library, because the
- * accessible behaviour is the whole point: Escape closes, arrow keys move,
- * the dialog traps focus, and the page behind cannot scroll.
- *
- * Pinch/drag zoom is offered on touch, but every zoomed state also has a
- * keyboard path — a mouse-only viewer fails WCAG 2.1 AA.
- *
- * Images are absolute URLs, straight from the catalogue API.
- */
+import { ArrowRight, Close, Minus, Plus } from './Icons'
 
 interface LightboxProps {
-  images: string[]
-  alts: string[]
-  /** Open index, or null to stay closed. */
+  images: ImageKey[]
+  alts?: string[]
   index: number | null
   onClose: () => void
-  onIndexChange: (index: number) => void
+  onIndexChange: (i: number) => void
 }
 
-export function Lightbox({ images, alts, index, onClose, onIndexChange }: LightboxProps) {
+/**
+ * Full-screen image viewer with zoom, pan-when-zoomed, keyboard support
+ * (arrows, Escape, +/-, 0 to reset) and touch gestures (pinch / drag).
+ * Zoom is a smooth transform — we never imply a 360° view we don't have.
+ */
+export function Lightbox({ images, alts = [], index, onClose, onIndexChange }: LightboxProps) {
   const open = index !== null
-  const stageRef = useRef<HTMLDivElement>(null)
-  const closeRef = useRef<HTMLButtonElement>(null)
-  const previouslyFocused = useRef<HTMLElement | null>(null)
+  const [zoom, setZoom] = useState(1)
+  const [offset, setOffset] = useState({ x: 0, y: 0 })
+  const dragRef = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null)
+  const pinchRef = useRef<{ dist: number; zoom: number } | null>(null)
 
   useScrollLock(open)
   useEscape(open, onClose)
 
-  const count = images.length
-  const current = index ?? 0
-
-  const go = useCallback(
-    (next: number) => {
-      if (!count) return
-      // Wrap around; a gallery should not dead-end at either edge.
-      onIndexChange(((next % count) + count) % count)
-    },
-    [count, onIndexChange],
-  )
+  useEffect(() => {
+    if (!open) return
+    setZoom(1)
+    setOffset({ x: 0, y: 0 })
+  }, [index, open])
 
   useEffect(() => {
     if (!open) return
-    previouslyFocused.current = document.activeElement as HTMLElement
-    const t = window.setTimeout(() => closeRef.current?.focus({ preventScroll: true }), 40)
-
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowRight') {
-        e.preventDefault()
-        go(current + 1)
-      } else if (e.key === 'ArrowLeft') {
-        e.preventDefault()
-        go(current - 1)
-      } else if (e.key === 'Tab') {
-        // Keep focus inside the dialog.
-        const nodes = stageRef.current?.parentElement?.querySelectorAll<HTMLElement>(
-          'button, [href], [tabindex]:not([tabindex="-1"])',
-        )
-        if (!nodes?.length) return
-        const first = nodes[0]
-        const last = nodes[nodes.length - 1]
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault()
-          last.focus()
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault()
-          first.focus()
-        }
+      if (e.key === 'ArrowRight') next()
+      if (e.key === 'ArrowLeft') prev()
+      if (e.key === '+' || e.key === '=') setZoom((z) => Math.min(4, z + 0.4))
+      if (e.key === '-') setZoom((z) => Math.max(1, z - 0.4))
+      if (e.key === '0') {
+        setZoom(1)
+        setOffset({ x: 0, y: 0 })
       }
     }
-
     window.addEventListener('keydown', onKey)
-    return () => {
-      window.clearTimeout(t)
-      window.removeEventListener('keydown', onKey)
-      previouslyFocused.current?.focus?.({ preventScroll: true })
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, index])
+
+  if (!open || index === null) return null
+
+  const next = () => onIndexChange((index + 1) % images.length)
+  const prev = () => onIndexChange((index - 1 + images.length) % images.length)
+  const current = images[index]
+
+  const clampOffset = (x: number, y: number, z: number) => {
+    const limit = ((z - 1) / z) * 320
+    return {
+      x: Math.max(-limit, Math.min(limit, x)),
+      y: Math.max(-limit, Math.min(limit, y)),
     }
-  }, [open, current, go])
+  }
 
-  if (!open || !count) return null
+  const toggleZoom = () => {
+    if (zoom > 1) {
+      setZoom(1)
+      setOffset({ x: 0, y: 0 })
+    } else {
+      setZoom(2.2)
+    }
+  }
 
-  const src = images[current]
-
-  return (
-    <div className="lightbox" role="dialog" aria-modal="true" aria-label="Product images">
+  return createPortal(
+    <div className="lightbox" role="dialog" aria-modal="true" aria-label="Image viewer">
       <div className="lightbox__bar">
-        <p className="lightbox__count">
-          {current + 1} / {count}
-        </p>
-
+        <span className="lightbox__count">
+          {String(index + 1).padStart(2, '0')} / {String(images.length).padStart(2, '0')}
+        </span>
         <div className="lightbox__actions">
-          <button type="button" className="icon-btn" aria-label="Zoom in" onClick={() => zoom(stageRef, +1)}>
-            <ZoomIn width={16} height={16} />
-          </button>
-          <button type="button" className="icon-btn" aria-label="Zoom out" onClick={() => zoom(stageRef, -1)}>
-            <ZoomOut width={16} height={16} />
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => setZoom((z) => Math.max(1, z - 0.4))}
+            aria-label="Zoom out"
+            disabled={zoom <= 1}
+          >
+            <Minus />
           </button>
           <button
             type="button"
             className="icon-btn"
-            aria-label="Close gallery"
-            onClick={onClose}
-            ref={closeRef}
+            onClick={() => setZoom((z) => Math.min(4, z + 0.4))}
+            aria-label="Zoom in"
+            disabled={zoom >= 4}
           >
-            <Close width={18} height={18} />
+            <Plus />
+          </button>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label="Close viewer">
+            <Close />
           </button>
         </div>
       </div>
 
-      <div className="lightbox__stage" ref={stageRef}>
+      <div
+        className="lightbox__stage"
+        onDoubleClick={toggleZoom}
+        onPointerDown={(e) => {
+          if (zoom <= 1) return
+          dragRef.current = { x: e.clientX, y: e.clientY, ox: offset.x, oy: offset.y }
+          ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
+        }}
+        onPointerMove={(e) => {
+          const d = dragRef.current
+          if (!d) return
+          setOffset(clampOffset(d.ox + (e.clientX - d.x), d.oy + (e.clientY - d.y), zoom))
+        }}
+        onPointerUp={() => {
+          dragRef.current = null
+        }}
+        onTouchStart={(e) => {
+          if (e.touches.length === 2) {
+            const [a, b] = Array.from(e.touches)
+            const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
+            pinchRef.current = { dist, zoom }
+          }
+        }}
+        onTouchMove={(e) => {
+          if (e.touches.length === 2 && pinchRef.current) {
+            const [a, b] = Array.from(e.touches)
+            const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
+            const ratio = dist / pinchRef.current.dist
+            setZoom(Math.max(1, Math.min(4, pinchRef.current.zoom * ratio)))
+          }
+        }}
+        onTouchEnd={() => {
+          pinchRef.current = null
+        }}
+      >
         <img
-          key={src}
-          src={src}
+          key={current + index}
+          src={img(current, 2000)}
+          srcSet={srcSet(current) || undefined}
           sizes="100vw"
-          alt={alts[current] ?? ''}
+          alt={alts[index] ?? `Photograph ${index + 1}`}
+          style={{
+            transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`,
+            cursor: zoom > 1 ? 'grab' : 'zoom-in',
+          }}
+          onClick={zoom === 1 ? toggleZoom : undefined}
           draggable={false}
-          decoding="async"
         />
       </div>
 
-      {count > 1 && (
+      {images.length > 1 && (
         <div className="lightbox__nav">
-          <button
-            type="button"
-            className="lightbox__arrow"
-            aria-label="Previous image"
-            onClick={() => go(current - 1)}
-          >
-            <ArrowLeft width={18} height={18} />
+          <button type="button" className="lightbox__arrow" onClick={prev} aria-label="Previous image">
+            <ArrowRight style={{ transform: 'rotate(180deg)' }} />
           </button>
-          <button
-            type="button"
-            className="lightbox__arrow"
-            aria-label="Next image"
-            onClick={() => go(current + 1)}
-          >
-            <ArrowRight width={18} height={18} />
+          <button type="button" className="lightbox__arrow" onClick={next} aria-label="Next image">
+            <ArrowRight />
           </button>
         </div>
       )}
 
-      <p className="lightbox__hint">
-        Arrow keys to navigate · Escape to close
-      </p>
-    </div>
+      <p className="lightbox__hint">Double-click or pinch to zoom · Arrow keys to browse · Esc to close</p>
+    </div>,
+    document.body,
   )
-}
-
-/** Step a CSS scale on the stage image, clamped so it stays inspectable. */
-function zoom(stage: React.RefObject<HTMLDivElement | null>, direction: 1 | -1) {
-  const image = stage.current?.querySelector<HTMLImageElement>('img')
-  if (!image) return
-  const raw = Number(image.dataset.scale ?? '1')
-  const next = Math.min(3, Math.max(1, raw + direction * 0.5))
-  image.dataset.scale = String(next)
-  image.style.transform = `scale(${next})`
-  image.style.cursor = next > 1 ? 'zoom-out' : 'zoom-in'
 }

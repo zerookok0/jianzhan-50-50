@@ -1,17 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useCatalogue } from '../lib/catalogue'
-import { formatMinor } from '../lib/api/client'
+import { products, glazes, categories, formatPrice } from '../data/products'
 import { useDocumentMeta, useReveal, useRoute } from '../lib/hooks'
 import { ProductCard } from '../components/ui/ProductCard'
 import { MediaImage } from '../components/ui/Media'
 import { visual } from '../styles/visual'
 import { Close } from '../components/ui/Icons'
-import type { CatalogueProduct } from '../lib/catalogue'
+import type { Product, CategoryId, GlazeId } from '../data/types'
 
 type SortKey = 'curated' | 'price-asc' | 'price-desc' | 'newest'
 
 interface CollectionProps {
-  onQuickView: (p: CatalogueProduct) => void
+  onQuickView: (p: Product) => void
 }
 
 const PAGE = 9
@@ -19,15 +18,13 @@ const PAGE = 9
 export function Collection({ onQuickView }: CollectionProps) {
   useDocumentMeta(
     'Collection — Jian Ware Tea Bowls & Vessels | JIANZHAN',
-    'Browse the JIANZHAN collection of Jian ware tea bowls and vessels: oil spot, hare’s fur, iridescent and jade glazes. Filter by glaze and category and buy directly from the studio.',
+    'Browse the JIANZHAN collection of Jian ware tea bowls and vessels: oil spot, hare’s fur, iridescent and jade glazes. Filter by glaze and category, preview quickly, and continue to purchase on our WordPress store.',
   )
   useReveal()
 
-  const { products, glazes, categories, loading, error, source } = useCatalogue()
   const route = useRoute()
-
-  const [glazeFilter, setGlazeFilter] = useState<string | 'all'>('all')
-  const [categoryFilter, setCategoryFilter] = useState<string | 'all'>('all')
+  const [glazeFilter, setGlazeFilter] = useState<GlazeId | 'all'>('all')
+  const [categoryFilter, setCategoryFilter] = useState<CategoryId | 'all'>('all')
   const [sort, setSort] = useState<SortKey>('curated')
   const [visible, setVisible] = useState(PAGE)
   const [filtersOpen, setFiltersOpen] = useState(false)
@@ -35,8 +32,8 @@ export function Collection({ onQuickView }: CollectionProps) {
   /* Honour ?glaze= from the home page explorer */
   useEffect(() => {
     const g = route.query.get('glaze')
-    if (g && glazes.some((gl) => gl.id === g)) setGlazeFilter(g)
-  }, [route.query, glazes])
+    if (g && glazes.some((gl) => gl.id === g)) setGlazeFilter(g as GlazeId)
+  }, [route.query])
 
   const filtered = useMemo(() => {
     const list = products.filter(
@@ -46,25 +43,18 @@ export function Collection({ onQuickView }: CollectionProps) {
     )
     switch (sort) {
       case 'price-asc':
-        return [...list].sort((a, b) => a.fromPrice - b.fromPrice)
+        return [...list].sort((a, b) => a.price - b.price)
       case 'price-desc':
-        return [...list].sort((a, b) => b.fromPrice - a.fromPrice)
+        return [...list].sort((a, b) => b.price - a.price)
       case 'newest':
         return [...list].sort((a, b) => Number(b.year) - Number(a.year))
       default:
         return [...list].sort((a, b) => Number(b.featured) - Number(a.featured))
     }
-  }, [products, glazeFilter, categoryFilter, sort])
+  }, [glazeFilter, categoryFilter, sort])
 
   const shown = filtered.slice(0, visible)
   const activeCount = (glazeFilter === 'all' ? 0 : 1) + (categoryFilter === 'all' ? 0 : 1)
-
-  const cheapest = useMemo(
-    () => (products.length ? Math.min(...products.map((p) => p.fromPrice)) : 0),
-    [products],
-  )
-  const currency = products[0]?.currency ?? 'USD'
-  const minorUnit = products[0]?.minorUnit ?? 2
 
   const reset = () => {
     setGlazeFilter('all')
@@ -93,7 +83,7 @@ export function Collection({ onQuickView }: CollectionProps) {
           <dl className="collection-hero__facts reveal" data-delay="3">
             <div>
               <dt>Pieces</dt>
-              <dd>{loading ? '—' : products.length}</dd>
+              <dd>{products.length}</dd>
             </div>
             <div>
               <dt>Glaze families</dt>
@@ -101,18 +91,10 @@ export function Collection({ onQuickView }: CollectionProps) {
             </div>
             <div>
               <dt>From</dt>
-              <dd>{products.length ? formatMinor(cheapest, currency, minorUnit) : '—'}</dd>
+              <dd>{formatPrice(Math.min(...products.map((p) => p.price)))}</dd>
             </div>
           </dl>
-
-          {/* Honest provenance line — never claims live stock it does not have. */}
-          <p className="collection-hero__demo">
-            {loading
-              ? 'Reading live stock and prices from our store…'
-              : source === 'api'
-                ? 'Live stock and pricing from our store'
-                : 'Offline catalogue · prices not live'}
-          </p>
+          <p className="collection-hero__demo">Demo catalogue · prices illustrative, not live stock</p>
         </div>
       </header>
 
@@ -129,7 +111,7 @@ export function Collection({ onQuickView }: CollectionProps) {
           </button>
 
           <p className="collection-toolbar__count" role="status" aria-live="polite">
-            {loading ? 'Loading…' : `${filtered.length} piece${filtered.length === 1 ? '' : 's'}`}
+            {filtered.length} piece{filtered.length === 1 ? '' : 's'}
           </p>
 
           <div className="collection-toolbar__sort">
@@ -241,36 +223,13 @@ export function Collection({ onQuickView }: CollectionProps) {
           </div>
         )}
 
-        {/* ---- Loading ---- */}
-
-        {loading && products.length === 0 && (
-          <div className="empty-state" aria-busy="true">
-            <p className="display display--sm">Loading the collection…</p>
-            <p className="body">Reading live prices and stock from our store.</p>
-          </div>
-        )}
-
-        {/* ---- Store unreachable ---- */}
-
-        {!loading && error && source === 'static' && (
-          <div className="empty-state" role="alert">
-            <p className="display display--sm">The store could not be reached</p>
-            <p className="body">{error} Showing a cached catalogue, so prices and stock may be out of date and items cannot be bought until it reconnects.</p>
-            <button type="button" className="btn btn--outline" onClick={reset}>
-              Show all pieces
-            </button>
-          </div>
-        )}
-
-        {shown.length > 0 && (
+        {shown.length > 0 ? (
           <div className="card-grid card-grid--collection">
             {shown.map((p, i) => (
               <ProductCard key={p.id} product={p} onQuickView={onQuickView} index={i} />
             ))}
           </div>
-        )}
-
-        {!loading && shown.length === 0 && !(error && source === 'static') && (
+        ) : (
           <div className="empty-state">
             <p className="display display--sm">No pieces match these filters</p>
             <p className="body">
@@ -295,9 +254,8 @@ export function Collection({ onQuickView }: CollectionProps) {
           <div className="collection-note__body">
             <p className="eyebrow">How buying works</p>
             <p className="body">
-              Pieces are bought directly here: choose one, add it to the cart, and pay at checkout.
-              Stock is confirmed by the store each time an item is added, because each firing
-              produces only a handful of objects.
+              This site is a catalogue, not a shop. Choosing a piece takes you to its page on our
+              WordPress store, where checkout, shipping and payment are handled.
             </p>
           </div>
         </aside>
