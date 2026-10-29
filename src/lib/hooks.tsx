@@ -11,70 +11,10 @@ export interface Route {
 
 const RouteContext = createContext<Route>({ path: '/', query: new URLSearchParams() })
 
-/**
- * DEPLOYMENT BASE
- * ------------------------------------------------------------------
- * This bundle is built to live inside a WordPress subdirectory
- * (e.g. https://example.com/site/), where the app must NOT assume it
- * owns the domain root.
- *
- * Two modes:
- *  - 'hash'    (default) real URL is /site/#/collection. Works with
- *              base './' at any depth, on any host, with no rewrites.
- *  - 'history' clean URLs like /site/collection. Requires an absolute
- *              base (VITE_BASE=/site/) and a server rewrite to index.html.
- *
- * Set at build time: VITE_ROUTER=history
- */
-const ROUTER_MODE: 'hash' | 'history' =
-  (import.meta.env.VITE_ROUTER as string | undefined) === 'history' ? 'history' : 'hash'
-
-/**
- * Resolves the directory this app is served from, without a trailing slash:
- * '/site' (absolute base) or '/nested/site' (inferred from the built script).
- */
-function detectBase(): string {
-  const envBase = import.meta.env.BASE_URL || '/'
-
-  if (envBase.startsWith('/')) {
-    return envBase.replace(/\/+$/, '')
-  }
-
-  // Relative base ('./'): infer the folder from our own bundle URL.
-  const script = document.querySelector<HTMLScriptElement>('script[type="module"][src]')
-  if (script) {
-    try {
-      const url = new URL(script.getAttribute('src') || '', window.location.href)
-      const marker = url.pathname.indexOf('/assets/')
-      if (marker >= 0) return url.pathname.slice(0, marker).replace(/\/+$/, '')
-    } catch {
-      /* fall through to root */
-    }
-  }
-
-  return ''
-}
-
-const BASE = detectBase()
-
 function readLocation(): Route {
-  if (ROUTER_MODE === 'hash') {
-    const raw = window.location.hash.replace(/^#/, '') || '/'
-    const [pathname, search = ''] = raw.split('?')
-    return {
-      path: (pathname || '/').replace(/\/+$/, '') || '/',
-      query: new URLSearchParams(search),
-    }
-  }
-
   const { pathname, search } = window.location
-  let path = pathname.replace(/\/+$/, '')
-
-  if (BASE && path.startsWith(BASE)) path = path.slice(BASE.length)
-  path = path.replace(/\/index\.html$/, '').replace(/\/+$/, '')
-
   return {
-    path: path || '/',
+    path: pathname.replace(/\/+$/, '') || '/',
     query: new URLSearchParams(search),
   }
 }
@@ -85,11 +25,7 @@ export function RouterProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const onChange = () => setRoute(readLocation())
     window.addEventListener('popstate', onChange)
-    window.addEventListener('hashchange', onChange)
-    return () => {
-      window.removeEventListener('popstate', onChange)
-      window.removeEventListener('hashchange', onChange)
-    }
+    return () => window.removeEventListener('popstate', onChange)
   }, [])
 
   return <RouteContext.Provider value={route}>{children}</RouteContext.Provider>
@@ -99,37 +35,18 @@ export function useRoute(): Route {
   return useContext(RouteContext)
 }
 
-/**
- * Builds the value for an anchor's href. In hash mode this is '#/collection',
- * which resolves correctly regardless of which folder the bundle sits in.
- */
-export function toHref(href: string): string {
-  if (ROUTER_MODE === 'hash') return href.startsWith('#') ? href : `#${href}`
-  if (!BASE || href.startsWith(BASE)) return href
-  return `${BASE}${href}`
-}
-
 /** Navigate without a full reload. Falls back to normal navigation for external URLs. */
 export function navigate(href: string, opts: { replace?: boolean } = {}) {
-  try {
-    const url = new URL(href, window.location.origin)
-    if (url.origin !== window.location.origin) {
-      window.location.href = href
-      return
-    }
-  } catch {
+  const url = new URL(href, window.location.origin)
+  if (url.origin !== window.location.origin) {
     window.location.href = href
     return
   }
-
-  const target = ROUTER_MODE === 'hash' ? `#${href}` : href
-
   if (opts.replace) {
-    window.history.replaceState({}, '', target)
+    window.history.replaceState({}, '', url.pathname + url.search)
   } else {
-    window.history.pushState({}, '', target)
+    window.history.pushState({}, '', url.pathname + url.search)
   }
-
   window.dispatchEvent(new PopStateEvent('popstate'))
   window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
 }

@@ -1,16 +1,17 @@
-import { applyBasisPoints, clampNonNegative } from '../lib/money.ts'
-
 /**
  * SHIPPING
  * ------------------------------------------------------------------
- * Zone matching then method pricing. Pure functions; the caller loads the
- * zones and methods from D1 and passes them in.
+ * Quotes are pure: given zones, methods and a basket, produce priced
+ * options. No database, no clock, no network — so the tests assert exact
+ * amounts.
  *
- * This is deliberately simple arithmetic, not carrier integration. No
- * live rates, no dimensional weight, no negotiated tariffs.
+ * The rule that prevents the most embarrassing bug: a method that no
+ * longer exists, or no longer applies, returns `null` rather than a
+ * guessed price. Charging an old rate because a zone was deleted is worse
+ * than refusing the order.
  */
 
-export interface ShippingZoneRule {
+export interface ShippingZone {
   id: string
   name: string
   countries: string[]
@@ -20,13 +21,14 @@ export interface ShippingZoneRule {
   isActive: boolean
 }
 
-export interface ShippingMethodRule {
+export interface ShippingMethod {
   id: string
   zoneId: string
   name: string
   rateType: 'flat' | 'weight' | 'subtotal'
-  /** flat: minor units per shipment; weight: per kg; subtotal: basis points. */
+  /** Minor units for flat; minor units per kg for weight; basis points for subtotal. */
   rate: number
+  /** Minor units; shipping is free at or above this subtotal. */
   freeOver: number | null
   minSubtotal: number
   deliveryTime: string
@@ -34,172 +36,203 @@ export interface ShippingMethodRule {
   position: number
 }
 
-export interface ShippingQuote {
-  methodId: string
-  zoneId: string
-  name: string
-  deliveryTime: string
-  /** Minor units. */
-  amount: number
-  /** True when the free-shipping threshold waived the cost. */
-  freeApplied: boolean
-}
-
 export interface ShippingRequest {
   country: string | null
   region: string | null
   postcode: string | null
-  /** Minor units, after discounts. */
   subtotal: number
-  /** Grams. */
   weightG: number
-  /** False when the cart has no shippable items. */
   needsShipping: boolean
 }
 
-/**
- * Match a destination to the most specific zone.
- * Specificity: postcode prefix > region > country > wildcard.
- */
-export function matchZone(
-  zones: ShippingZoneRule[],
-  dest: { country: string | null; region: string | null; postcode: string | null },
-): { zone: ShippingZoneRule | null; ambiguity: boolean } {
-  if (!dest.country) return { zone: null, ambiguity: false }
-
-  const candidates = zones.filter((z) => {
-    if (!z.isActive) return false
-    const countryOk = z.countries.includes('*') || z.countries.includes(dest.country!)
-    if (!countryOk) return false
-    if (z.regions.length && !(dest.region && z.regions.includes(dest.region))) return false
-    if (z.postcodePrefixes.length) {
-      const pc = (dest.postcode ?? '').toUpperCase()
-      if (!pc || !z.postcodePrefixes.some((p) => pc.startsWith(p.toUpperCase()))) return false
-    }
-    return true
-  })
-
-  if (!candidates.length) return { zone: null, ambiguity: false }
-
-  const score = (z: ShippingZoneRule) => {
-    let s = 0
-    if (!z.countries.includes('*')) s += 10
-    if (z.regions.length) s += 5
-    if (z.postcodePrefixes.length) s += 8
-    return s
-  }
-
-  const sorted = [...candidates].sort((a, b) => score(b) - score(a) || a.position - b.position)
-  const ambiguity = sorted.length > 1 && score(sorted[0]) === score(sorted[1])
-  return { zone: sorted[0], ambiguity }
+export interface ShippingQuote {
+  methodId: string
+  name: string
+  /** Minor units. */
+  amount: number
+  deliveryTime: string
+  freeApplied: boolean
 }
 
+export interface ShippingResult {
+  available: boolean
+  reason: string | null
+  quotes: ShippingQuote[]
+}
+
+/* ---------------- Zone matching ---------------- */
+
 /**
- * Price every active method in a zone for a given request.
- * Methods below their minimum subtotal are omitted, not shown as disabled,
- * so the customer is never offered something they cannot select.
+ * Most specific zone wins:
+ *   postcode prefix  (score 3)
+ *   region           (score 2)
+ *   country          (score 1)
+ *   wildcard         (score 0)
  */
-export function quoteMethods(
-  methods: ShippingMethodRule[],
-  zoneId: string,
-  req: ShippingRequest,
-): ShippingQuote[] {
-  const applicable = methods.filter(
-    (m) => m.zoneId === zoneId && m.isActive && req.subtotal >= m.minSubtotal,
-  )
+export function matchZone(
+  zones: ShippingZone[],
+  destination: { country: string | null; region: string | null; postcode: string | null },
+): { zone: ShippingZone | null } {
+  const country = destination.country?.toUpperCase() ?? ''
+  const region = destination.region?.toUpperCase() ?? ''
+  const postcode = (destination.postcode ?? '').toUpperCase().replace(/\s+/g, '')
 
-  return applicable
-    .sort((a, b) => a.position - b.position)
-    .map((m) => {
-      const base = (() => {
-        switch (m.rateType) {
-          case 'flat':
-            return m.rate
-          case 'weight': {
-            // Per-kilogram, rounded up so a 250 g parcel still pays 1 kg.
-            const kg = Math.max(1, Math.ceil(req.weightG / 1000))
-            return m.rate * kg
-          }
-          case 'subtotal':
-            return applyBasisPoints(req.subtotal, m.rate, 'round')
-          default:
-            return 0
-        }
-      })()
+  const scored = zones
+    .filter((zone) => zone.isActive)
+    .map((zone) => {
+      const countryMatch = zone.countries.some((c) => c === '*' || c.toUpperCase() === country)
+      if (!countryMatch) return null
 
-      const freeApplied = m.freeOver !== null && req.subtotal >= m.freeOver
-      const amount = freeApplied ? 0 : clampNonNegative(base)
+      if (zone.regions.length > 0) {
+        const regionMatch = zone.regions.some((r) => r.toUpperCase() === region)
+        if (!regionMatch) return null
+      }
 
+      if (zone.postcodePrefixes.length > 0) {
+        const prefixMatch = zone.postcodePrefixes.some((prefix) =>
+          postcode.startsWith(prefix.toUpperCase().replace(/\s+/g, '')),
+        )
+        if (!prefixMatch) return null
+      }
+
+      let score = 0
+      if (zone.countries.some((c) => c !== '*')) score += 1
+      if (zone.regions.length > 0) score += 2
+      if (zone.postcodePrefixes.length > 0) score += 3
+
+      return { zone, score }
+    })
+    .filter((entry): entry is { zone: ShippingZone; score: number } => entry !== null)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score
+      return a.zone.position - b.zone.position
+    })
+
+  return { zone: scored[0]?.zone ?? null }
+}
+
+/* ---------------- Pricing a method ---------------- */
+
+function priceMethod(
+  method: ShippingMethod,
+  request: { subtotal: number; weightG: number },
+): { amount: number; freeApplied: boolean } {
+  if (method.freeOver !== null && request.subtotal >= method.freeOver) {
+    return { amount: 0, freeApplied: true }
+  }
+
+  switch (method.rateType) {
+    case 'weight': {
+      // Round up to whole kilograms: a 1.25 kg parcel is charged as 2 kg,
+      // which is how carriers bill it.
+      const kg = Math.max(1, Math.ceil(request.weightG / 1000))
+      return { amount: method.rate * kg, freeApplied: false }
+    }
+    case 'subtotal':
       return {
-        methodId: m.id,
-        zoneId,
-        name: m.name,
-        deliveryTime: m.deliveryTime,
-        amount,
-        freeApplied,
+        amount: Math.floor((request.subtotal * method.rate) / 10000),
+        freeApplied: false,
+      }
+    case 'flat':
+    default:
+      return { amount: method.rate, freeApplied: false }
+  }
+}
+
+export function quoteMethods(
+  methods: ShippingMethod[],
+  zoneId: string,
+  request: { subtotal: number; weightG: number },
+): ShippingQuote[] {
+  return methods
+    .filter(
+      (method) =>
+        method.isActive &&
+        method.zoneId === zoneId &&
+        request.subtotal >= method.minSubtotal,
+    )
+    .sort((a, b) => a.position - b.position)
+    .map((method) => {
+      const priced = priceMethod(method, request)
+      return {
+        methodId: method.id,
+        name: method.name,
+        amount: priced.amount,
+        deliveryTime: method.deliveryTime,
+        freeApplied: priced.freeApplied,
       }
     })
 }
 
 /**
- * Build the full quote for a destination.
- * Returns an explicit "unavailable" result rather than an empty list, so
- * the UI can distinguish "no method matches" from "nothing to ship".
+ * The whole quote: does anything need shipping, which zone applies, and
+ * what can we offer.
+ *
+ * A basket with nothing shippable is `available: true` with no options —
+ * not an error. Telling a digital-goods customer that delivery is
+ * unavailable would be nonsense.
  */
-export function quoteShipping(args: {
-  zones: ShippingZoneRule[]
-  methods: ShippingMethodRule[]
+export function quoteShipping(input: {
+  zones: ShippingZone[]
+  methods: ShippingMethod[]
   request: ShippingRequest
-}): { available: boolean; quotes: ShippingQuote[]; reason?: string } {
-  const { request } = args
+}): ShippingResult {
+  const { zones, methods, request } = input
 
   if (!request.needsShipping) {
-    return { available: true, quotes: [] }
+    return { available: true, reason: null, quotes: [] }
   }
 
   if (!request.country) {
-    return { available: false, quotes: [], reason: 'Enter a delivery country to see shipping.' }
+    return {
+      available: false,
+      reason: 'Enter a delivery address to see options.',
+      quotes: [],
+    }
   }
 
-  const { zone } = matchZone(args.zones, {
-    country: request.country,
-    region: request.region,
-    postcode: request.postcode,
-  })
+  const { zone } = matchZone(zones, request)
 
   if (!zone) {
     return {
       available: false,
+      reason: `We do not currently ship to ${request.country}.`,
       quotes: [],
-      reason: `We do not currently ship to ${request.country}. Please contact the studio.`,
     }
   }
 
-  const quotes = quoteMethods(args.methods, zone.id, request)
+  const quotes = quoteMethods(methods, zone.id, {
+    subtotal: request.subtotal,
+    weightG: request.weightG,
+  })
 
-  if (!quotes.length) {
+  if (quotes.length === 0) {
     return {
       available: false,
+      reason: 'No delivery option is available for this order.',
       quotes: [],
-      reason: 'No delivery option is available for this address. Please contact the studio.',
     }
   }
 
-  return { available: true, quotes }
+  return { available: true, reason: null, quotes }
 }
 
-/** Pick the requested method, or the cheapest, or fail explicitly. */
+/**
+ * Pick the requested method, or the cheapest one when none was requested.
+ *
+ * Returns null when the requested method is gone. Falling back to a
+ * different price without telling anyone is how a customer gets charged
+ * more than the button they pressed.
+ */
 export function selectQuote(
   quotes: ShippingQuote[],
-  requestedId: string | null,
+  methodId: string | null,
 ): ShippingQuote | null {
-  if (!quotes.length) return null
-  if (requestedId) {
-    const match = quotes.find((q) => q.methodId === requestedId)
-    if (match) return match
-    // A requested-but-missing method is a stale cart, not a silent
-    // fallback to a different price.
-    return null
+  if (quotes.length === 0) return null
+
+  if (methodId) {
+    return quotes.find((quote) => quote.methodId === methodId) ?? null
   }
-  return [...quotes].sort((a, b) => a.amount - b.amount)[0]
+
+  return quotes.reduce((cheapest, quote) => (quote.amount < cheapest.amount ? quote : cheapest))
 }

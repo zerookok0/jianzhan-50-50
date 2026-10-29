@@ -31,10 +31,10 @@ export interface SpecItem {
 export interface Variant {
   id: string
   label: string
-  /** Absolute URL on your WordPress site. null = not configured yet. */
-  purchaseUrl: string | null
-  /** WooCommerce variation ID. Required before this size can be added to the cart. */
-  wooVariationId?: number
+  /** Display value for this option, e.g. 'Large'. Falls back to `label`. */
+  optionValue?: string
+  /** Price override in minor units, when this option costs differently. */
+  price?: number
 }
 
 export interface Product {
@@ -50,14 +50,7 @@ export interface Product {
   category: CategoryId
   glaze: GlazeId
   specifications: SpecItem[]
-  /** Primary buy link. null = not configured. */
-  purchaseUrl: string | null
-  /**
-   * WooCommerce product ID. Required for "add to cart" — without it the
-   * piece can still be viewed but cannot be handed to the store.
-   */
-  wooId?: number
-  /** Optional per-size links; when present the UI asks for a size first. */
+  /** Optional per-size options; when present the UI asks for a size first. */
   variants?: Variant[]
   featured: boolean
   availability: Availability

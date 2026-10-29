@@ -1,103 +1,196 @@
-import type { SVGProps } from 'react'
+import type { ReactNode, SVGProps } from 'react'
 
-const base: SVGProps<SVGSVGElement> = {
-  width: 16,
-  height: 16,
-  viewBox: '0 0 24 24',
-  fill: 'none',
-  stroke: 'currentColor',
-  strokeWidth: 1.2,
-  strokeLinecap: 'square',
-  strokeLinejoin: 'miter',
-  'aria-hidden': true,
-  focusable: false,
+/**
+ * ICONS
+ * ------------------------------------------------------------------
+ * Hand-drawn 24x24 line icons. No icon library: the set is small, the
+ * stroke weight has to match the typography, and a dependency would cost
+ * more than it saves.
+ *
+ * Every icon is decorative by default (`aria-hidden`), because each one
+ * sits inside a control that already carries a text label or an
+ * `aria-label`. Passing `aria-hidden={false}` opts into being announced.
+ */
+
+export type IconProps = SVGProps<SVGSVGElement> & { filled?: boolean }
+
+interface BaseProps extends IconProps {
+  children: ReactNode
 }
 
-export const ArrowRight = (p: SVGProps<SVGSVGElement>) => (
-  <svg {...base} {...p}>
-    <path d="M3 12h17M14 5.5 20.5 12 14 18.5" />
-  </svg>
-)
+function Svg({ children, filled, width = 18, height = 18, strokeWidth = 1.4, ...rest }: BaseProps) {
+  void filled
+  return (
+    <svg
+      width={width}
+      height={height}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={strokeWidth}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+      {...rest}
+    >
+      {children}
+    </svg>
+  )
+}
 
-export const ArrowDown = (p: SVGProps<SVGSVGElement>) => (
-  <svg {...base} {...p}>
-    <path d="M12 3v18M5.5 14.5 12 21l6.5-6.5" />
-  </svg>
-)
+export function ArrowRight(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M4 12h15" />
+      <path d="m13 6 6 6-6 6" />
+    </Svg>
+  )
+}
 
-export const ArrowUpRight = (p: SVGProps<SVGSVGElement>) => (
-  <svg {...base} {...p}>
-    <path d="M6 18 18 6M8 6h10v10" />
-  </svg>
-)
+export function ArrowLeft(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M20 12H5" />
+      <path d="m11 18-6-6 6-6" />
+    </Svg>
+  )
+}
 
-export const Heart = ({ filled, ...p }: SVGProps<SVGSVGElement> & { filled?: boolean }) => (
-  <svg {...base} {...p} fill={filled ? 'currentColor' : 'none'}>
-    <path d="M12 20s-7.2-4.6-9-9.1C1.8 7.4 3.8 4.5 6.9 4.5c2 0 3.6 1.2 5.1 3.1 1.5-1.9 3.1-3.1 5.1-3.1 3.1 0 5.1 2.9 3.9 6.4-1.8 4.5-9 9.1-9 9.1Z" />
-  </svg>
-)
+export function ArrowDown(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M12 4v15" />
+      <path d="m6 13 6 6 6-6" />
+    </Svg>
+  )
+}
 
-export const Plus = (p: SVGProps<SVGSVGElement>) => (
-  <svg {...base} {...p}>
-    <path d="M12 4v16M4 12h16" />
-  </svg>
-)
+export function ChevronLeft(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m15 5-7 7 7 7" />
+    </Svg>
+  )
+}
 
-export const Minus = (p: SVGProps<SVGSVGElement>) => (
-  <svg {...base} {...p}>
-    <path d="M4 12h16" />
-  </svg>
-)
+export function ChevronRight(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m9 5 7 7-7 7" />
+    </Svg>
+  )
+}
 
-export const Close = (p: SVGProps<SVGSVGElement>) => (
-  <svg {...base} {...p}>
-    <path d="M5 5l14 14M19 5 5 19" />
-  </svg>
-)
+export function Close(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M6 6 18 18" />
+      <path d="M18 6 6 18" />
+    </Svg>
+  )
+}
 
-export const Menu = (p: SVGProps<SVGSVGElement>) => (
-  <svg {...base} {...p}>
-    <path d="M3 7h18M3 12h18M3 17h18" />
-  </svg>
-)
+export function Check(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m4 12.5 5 5L20 6.5" />
+    </Svg>
+  )
+}
 
-export const Expand = (p: SVGProps<SVGSVGElement>) => (
-  <svg {...base} {...p}>
-    <path d="M4 9V4h5M20 15v5h-5M20 9V4h-5M4 15v5h5" />
-  </svg>
-)
+export function Info(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5" />
+      <path d="M12 8h.01" />
+    </Svg>
+  )
+}
 
-export const Search = (p: SVGProps<SVGSVGElement>) => (
-  <svg {...base} {...p}>
-    <circle cx="11" cy="11" r="6.5" />
-    <path d="m16 16 4.5 4.5" />
-  </svg>
-)
+export function Alert(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M12 4 3 20h18L12 4Z" />
+      <path d="M12 10v4" />
+      <path d="M12 17h.01" />
+    </Svg>
+  )
+}
 
-export const Cart = (p: SVGProps<SVGSVGElement>) => (
-  <svg {...base} {...p}>
-    <path d="M3 4h2.4l2.3 10.6h10.1M6.4 8.4h13.2l-1.5 6.2" />
-    <circle cx="9" cy="19" r="1.4" />
-    <circle cx="17.4" cy="19" r="1.4" />
-  </svg>
-)
+export function Expand(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M9 4H4v5" />
+      <path d="M15 4h5v5" />
+      <path d="M15 20h5v-5" />
+      <path d="M9 20H4v-5" />
+    </Svg>
+  )
+}
 
-export const Check = (p: SVGProps<SVGSVGElement>) => (
-  <svg {...base} {...p}>
-    <path d="m4.5 12.5 5 5L20 6.5" />
-  </svg>
-)
+export function Heart({ filled = false, ...props }: IconProps) {
+  return (
+    <Svg {...props} fill={filled ? 'currentColor' : 'none'}>
+      <path d="M12 20s-7-4.4-7-9.3A4 4 0 0 1 12 8a4 4 0 0 1 7 2.7C19 15.6 12 20 12 20Z" />
+    </Svg>
+  )
+}
 
-export const Info = (p: SVGProps<SVGSVGElement>) => (
-  <svg {...base} {...p}>
-    <circle cx="12" cy="12" r="9" />
-    <path d="M12 11v6M12 7.6v.9" />
-  </svg>
-)
+export function Search(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="11" cy="11" r="6.5" />
+      <path d="m16 16 4 4" />
+    </Svg>
+  )
+}
 
-export const ScrollIndicator = (p: SVGProps<SVGSVGElement>) => (
-  <svg {...base} viewBox="0 0 24 40" width={18} height={30} {...p}>
-    <rect x="1" y="1" width="22" height="38" rx="11" />
-    <path d="M12 8v8" strokeLinecap="round" />
-  </svg>
-)
+export function Bag(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M5 8h14l-1 12H6L5 8Z" />
+      <path d="M9 8V6a3 3 0 0 1 6 0v2" />
+    </Svg>
+  )
+}
+
+export function Menu(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M4 8h16" />
+      <path d="M4 16h16" />
+    </Svg>
+  )
+}
+
+export function Minus(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M5 12h14" />
+    </Svg>
+  )
+}
+
+export function Plus(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </Svg>
+  )
+}
+
+/**
+ * Scroll affordance for the hero. A line with a travelling dot, not a
+ * generic chevron — it reads as a seam in the clay rather than UI chrome.
+ */
+export function ScrollIndicator(props: IconProps) {
+  return (
+    <Svg {...props} width={14} height={42} viewBox="0 0 14 42">
+      <path d="M7 0v26" opacity="0.45" />
+      <path d="m2 22 5 5 5-5" />
+    </Svg>
+  )
+}

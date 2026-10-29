@@ -1,121 +1,67 @@
--- ============================================================================
--- 0005 — SHIPPING & TAX
--- ----------------------------------------------------------------------------
--- Two rule tables, both read whole on every cart calculation. They are small
--- (tens of rows) and change rarely, so `SELECT * ... WHERE is_active = 1` is
--- the right shape; a query per destination would be slower and no clearer.
---
--- Multi-value columns (`countries`, `regions`, `postcode_prefixes`) hold JSON
--- arrays. Shipping zones are a small, hand-curated list edited through the
--- admin panel, so normalising them into three join tables would add joins to
--- every quote without making any query possible that is not possible now.
--- The trade-off is explicit: these columns are read whole, never filtered in
--- SQL.
--- ============================================================================
+/* ==========================================================================
+ * 0005 — Shipping and tax
+ *
+ * Rates are configurable data, not code: a change of carrier price or VAT
+ * rate must not require a deploy.
+ *
+ * Zone matching is most-specific-first — a country rule beats a wildcard,
+ * and a postcode prefix beats both. `position` breaks remaining ties.
+ *
+ * TAX IS ARITHMETIC. This is not legal tax determination. There is no
+ * nexus logic, no exemption handling and no reverse-charge rule. Read
+ * `docs/payment-provider-integration.md` §8 before selling into a
+ * jurisdiction you have not checked.
+ * ========================================================================== */
 
 CREATE TABLE IF NOT EXISTS shipping_zones (
-  id                TEXT    PRIMARY KEY,
-  name              TEXT    NOT NULL,
-
-  -- JSON array. '*' matches every country.
-  countries         TEXT    NOT NULL DEFAULT '["*"]',
-  -- JSON array. Empty means "any region in those countries".
-  regions           TEXT    NOT NULL DEFAULT '[]',
-  -- JSON array of uppercase prefixes, e.g. ["SW","SE"].
-  postcode_prefixes TEXT    NOT NULL DEFAULT '[]',
-
+  id                TEXT PRIMARY KEY,
+  name              TEXT NOT NULL,
+  countries         TEXT NOT NULL DEFAULT '[]',
+  regions           TEXT NOT NULL DEFAULT '[]',
+  postcode_prefixes TEXT NOT NULL DEFAULT '[]',
   position          INTEGER NOT NULL DEFAULT 0,
   is_active         INTEGER NOT NULL DEFAULT 1,
   created_at        INTEGER NOT NULL,
-  updated_at        INTEGER NOT NULL,
-
-  CHECK (is_active IN (0, 1))
+  updated_at        INTEGER NOT NULL
 );
-
-CREATE INDEX IF NOT EXISTS idx_zones_active
-  ON shipping_zones (is_active, position);
-
-/* ---- Methods -------------------------------------------------------------
- * `rate` is interpreted according to `rate_type`:
- *   flat     → minor units per shipment
- *   weight   → minor units per kilogram, rounded up
- *   subtotal → basis points of the discounted subtotal (800 = 8%)
- *
- * Storing one column for three meanings is safe only because rate_type is
- * right beside it and the pricing function switches on it explicitly.
- * ------------------------------------------------------------------------- */
 
 CREATE TABLE IF NOT EXISTS shipping_methods (
-  id            TEXT    PRIMARY KEY,
-  zone_id       TEXT    NOT NULL REFERENCES shipping_zones (id) ON DELETE CASCADE,
-  name          TEXT    NOT NULL,
-
-  rate_type     TEXT    NOT NULL,
-  rate          INTEGER NOT NULL DEFAULT 0,
-
-  -- Waive the cost above this subtotal (minor units). NULL = never free.
-  free_over     INTEGER,
-  -- Hide this method below this subtotal (minor units).
-  min_subtotal  INTEGER NOT NULL DEFAULT 0,
-
-  delivery_time TEXT    NOT NULL DEFAULT '',
-  position      INTEGER NOT NULL DEFAULT 0,
-  is_active     INTEGER NOT NULL DEFAULT 1,
-  created_at    INTEGER NOT NULL,
-  updated_at    INTEGER NOT NULL,
-
-  CHECK (rate_type IN ('flat', 'weight', 'subtotal')),
-  CHECK (rate >= 0),
-  CHECK (free_over IS NULL OR free_over >= 0),
-  CHECK (min_subtotal >= 0),
-  CHECK (is_active IN (0, 1))
+  id           TEXT PRIMARY KEY,
+  zone_id      TEXT NOT NULL REFERENCES shipping_zones(id) ON DELETE CASCADE,
+  name         TEXT NOT NULL,
+  /* flat | weight | subtotal */
+  rate_type    TEXT NOT NULL DEFAULT 'flat',
+  rate         INTEGER NOT NULL DEFAULT 0,
+  free_over    INTEGER,
+  min_subtotal INTEGER NOT NULL DEFAULT 0,
+  delivery_time TEXT NOT NULL DEFAULT '',
+  position     INTEGER NOT NULL DEFAULT 0,
+  is_active    INTEGER NOT NULL DEFAULT 1,
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_methods_zone
-  ON shipping_methods (zone_id, is_active, position);
+CREATE INDEX IF NOT EXISTS idx_methods_zone ON shipping_methods(zone_id, position);
 
-/* ---- Tax rules -----------------------------------------------------------
- * A rule matches on destination (country list, optional region) and tax
- * class. `rate_bp` is basis points — 2000 = 20% — because integer basis
- * points keep the arithmetic exact. A REAL percentage would reintroduce
- * exactly the rounding error the rest of the schema avoids.
- *
- * `position` resolves overlaps: the lowest position whose countries match
- * the destination wins, so a country-specific rule can sit above a
- * continent-wide fallback.
- * ------------------------------------------------------------------------- */
-
+/* ---- Tax rules ----------------------------------------------------------
+ * `rate_bp` is basis points: 2000 = 20%. `prices_include_tax` decides
+ * whether the rate is extracted from the listed price or added to it —
+ * getting that backwards inflates every receipt by the tax rate.
+ * ---------------------------------------------------------------------- */
 CREATE TABLE IF NOT EXISTS tax_rules (
-  id                 TEXT    PRIMARY KEY,
-  name               TEXT    NOT NULL,
-
-  -- JSON array of ISO country codes. '*' matches every destination.
-  countries          TEXT    NOT NULL DEFAULT '["*"]',
-  -- NULL matches any region within those countries.
+  id                 TEXT PRIMARY KEY,
+  name               TEXT NOT NULL,
+  countries          TEXT NOT NULL DEFAULT '[]',
   region             TEXT,
-
-  tax_class          TEXT    NOT NULL DEFAULT 'standard',
+  tax_class          TEXT NOT NULL DEFAULT '*',
   rate_bp            INTEGER NOT NULL DEFAULT 0,
-
-  /*
-   * True for VAT-style jurisdictions where the listed price already
-   * includes tax. The tax is then extracted from the total rather than
-   * added to it — adding it would overcharge every EU customer by the
-   * VAT rate.
-   */
   prices_include_tax INTEGER NOT NULL DEFAULT 0,
-
-  rounding           TEXT    NOT NULL DEFAULT 'round',
+  /* round | floor | ceil */
+  rounding           TEXT NOT NULL DEFAULT 'round',
   position           INTEGER NOT NULL DEFAULT 0,
   is_active          INTEGER NOT NULL DEFAULT 1,
   created_at         INTEGER NOT NULL,
-  updated_at         INTEGER NOT NULL,
-
-  CHECK (rate_bp >= 0 AND rate_bp <= 10000),
-  CHECK (prices_include_tax IN (0, 1)),
-  CHECK (rounding IN ('round', 'floor', 'ceil')),
-  CHECK (is_active IN (0, 1))
+  updated_at         INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_tax_active
-  ON tax_rules (is_active, position);
+CREATE INDEX IF NOT EXISTS idx_tax_rules_active ON tax_rules(is_active, position);

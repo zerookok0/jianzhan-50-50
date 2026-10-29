@@ -1,17 +1,22 @@
 import { useEffect, useRef, useState } from 'react'
 import { useCart } from '../../lib/cart'
-import { formatMinor } from '../../lib/api/client'
+import { formatMinor, errorLabel } from '../../lib/api/client'
+import { useEscape, useScrollLock, navigate } from '../../lib/hooks'
 import { AppLink } from '../ui/Media'
-import { Close, Minus, Plus, Info } from '../ui/Icons'
-import { useEscape, useScrollLock } from '../../lib/hooks'
-import { storeEnabled } from '../../config/store'
+import { Alert, Close, Minus, Plus } from '../ui/Icons'
 
 /**
- * Slide-over cart. Renders only in live mode, so the catalogue-only build
- * carries no dead UI.
+ * CART DRAWER
+ * ------------------------------------------------------------------
+ * Slide-over cart. Every number in it came from the server on the last
+ * mutation; nothing is recalculated here.
  *
- * Everything displayed comes from the server's cart object — the drawer
- * performs no price arithmetic of its own.
+ * Behaviour worth stating explicitly:
+ *   • Focus is trapped while open, and returns to the cart button on close.
+ *   • The quantity stepper disables "+" at the server's stated availability
+ *     rather than letting the user discover the limit through a 409.
+ *   • An out-of-stock line blocks checkout and says which line it is. A
+ *     silent 409 at payment time is the worst possible moment to learn.
  */
 export function CartDrawer() {
   const {
@@ -21,41 +26,80 @@ export function CartDrawer() {
     setQuantity,
     remove,
     busyKey,
-    loading,
     error,
     clearError,
     applyCoupon,
     removeCoupon,
     couponError,
     clearCouponError,
+    loading,
   } = useCart()
 
+  const [code, setCode] = useState('')
   const panelRef = useRef<HTMLDivElement>(null)
-  const previouslyFocused = useRef<HTMLElement | null>(null)
-  const [coupon, setCoupon] = useState('')
+  const restoreRef = useRef<HTMLElement | null>(null)
 
   useScrollLock(drawerOpen)
   useEscape(drawerOpen, closeDrawer)
 
+  /* Focus management: in on open, back to the trigger on close. */
   useEffect(() => {
     if (!drawerOpen) return
-    previouslyFocused.current = document.activeElement as HTMLElement
-    const first = panelRef.current?.querySelector<HTMLElement>(
-      'button, a[href], input, [tabindex]:not([tabindex="-1"])',
-    )
-    first?.focus({ preventScroll: true })
-    return () => previouslyFocused.current?.focus?.({ preventScroll: true })
+    restoreRef.current = document.activeElement as HTMLElement | null
+    const id = window.requestAnimationFrame(() => {
+      panelRef.current?.querySelector<HTMLElement>('button, [href], input')?.focus({
+        preventScroll: true,
+      })
+    })
+    return () => {
+      window.cancelAnimationFrame(id)
+      restoreRef.current?.focus?.({ preventScroll: true })
+    }
   }, [drawerOpen])
 
-  if (!storeEnabled()) return null
+  /* Focus trap. */
+  useEffect(() => {
+    if (!drawerOpen) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return
+      const panel = panelRef.current
+      if (!panel) return
+      const focusables = [
+        ...panel.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ].filter((el) => el.offsetParent !== null)
+      if (focusables.length === 0) return
 
-  const items = cart?.items ?? []
-  const totals = cart?.totals
+      const first = focusables[0]
+      const last = focusables[focusables.length - 1]
+
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [drawerOpen])
+
   const currency = cart?.currency ?? 'USD'
   const minorUnit = cart?.minorUnit ?? 2
-  const coupons = cart?.coupons ?? []
+  const money = (amount: number) => formatMinor(amount, currency, minorUnit)
 
-  const money = (n: number) => formatMinor(n, currency, minorUnit)
+  const items = cart?.items ?? []
+  const hasIssues = items.some((item) => !item.inStock)
+  const empty = items.length === 0
+
+  const submitCoupon = async () => {
+    const trimmed = code.trim()
+    if (!trimmed) return
+    const ok = await applyCoupon(trimmed)
+    if (ok) setCode('')
+  }
 
   return (
     <>
@@ -67,195 +111,252 @@ export function CartDrawer() {
 
       <aside
         className={`cart-drawer ${drawerOpen ? 'is-open' : ''}`}
-        aria-hidden={!drawerOpen}
-        aria-label="Shopping cart"
         ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Shopping cart"
+        aria-hidden={!drawerOpen}
       >
-        <header className="cart-drawer__head">
+        <div className="cart-drawer__head">
           <div>
             <p className="eyebrow">Your selection</p>
             <h2 className="cart-drawer__title">
-              Cart{cart?.itemCount ? ` (${cart.itemCount})` : ''}
+              {empty ? 'Cart is empty' : `${items.length} piece${items.length === 1 ? '' : 's'}`}
             </h2>
           </div>
-          <button type="button" className="icon-btn" onClick={closeDrawer} aria-label="Close cart">
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={closeDrawer}
+            aria-label="Close cart"
+          >
             <Close width={18} height={18} />
           </button>
-        </header>
+        </div>
 
         {error && (
-          <div className="cart-drawer__alert" role="alert">
-            <Info width={14} height={14} aria-hidden="true" />
-            <span>{error}</span>
-            <button type="button" onClick={clearError} className="cart-drawer__dismiss">
+          <p className="cart-drawer__alert" role="alert">
+            <Alert width={14} height={14} aria-hidden="true" />
+            <span>{errorLabel(error)}</span>
+            <button type="button" className="cart-drawer__dismiss" onClick={clearError}>
               Dismiss
             </button>
-          </div>
+          </p>
         )}
 
         <div className="cart-drawer__body">
-          {loading && items.length === 0 && <p className="cart-drawer__note">Loading cart…</p>}
+          {loading && empty && <p className="meta">Loading your cart…</p>}
 
-          {!loading && items.length === 0 && (
+          {empty && !loading && (
             <div className="cart-drawer__empty">
-              <p className="cart-drawer__note">Your cart is empty.</p>
-              <AppLink href="/collection" className="btn btn--outline" onClick={closeDrawer}>
+              <p className="cart-drawer__note">
+                No pieces selected yet. Each firing produces only a handful of bowls, so the
+                collection changes often.
+              </p>
+              <AppLink
+                href="/collection"
+                className="btn btn--outline"
+                onClick={closeDrawer}
+              >
                 Browse the collection
               </AppLink>
             </div>
           )}
 
-          {items.length > 0 && (
+          {!empty && (
             <ul className="cart-lines">
-              {items.map((it) => (
-                <li key={it.itemId} className="cart-line">
-                  {it.imageUrl && (
-                    <img
-                      src={it.imageUrl}
-                      alt=""
-                      className="cart-line__img"
-                      loading="lazy"
-                      width={72}
-                      height={90}
-                    />
-                  )}
-                  <div className="cart-line__body">
-                    <p className="cart-line__name">{it.name}</p>
-                    {it.variantLabel && <p className="cart-line__variant">{it.variantLabel}</p>}
-                    <p className="cart-line__price">{money(it.lineSubtotal)}</p>
+              {items.map((item) => {
+                const busy = busyKey === item.itemId
+                const atMax =
+                  item.available !== null && item.quantity >= item.available
 
-                    <div className="cart-line__actions">
-                      <div className="qty">
+                return (
+                  <li className="cart-line" key={item.itemId}>
+                    {item.imageUrl && (
+                      <img
+                        className="cart-line__img"
+                        src={item.imageUrl}
+                        alt=""
+                        loading="lazy"
+                      />
+                    )}
+
+                    <div className="cart-line__body">
+                      <p className="cart-line__name">{item.name}</p>
+                      {item.variantLabel && (
+                        <p className="cart-line__variant">{item.variantLabel}</p>
+                      )}
+                      <p className="cart-line__price">
+                        {money(item.unitPrice)} each
+                      </p>
+
+                      {!item.inStock && (
+                        <p className="cart-line__variant" style={{ color: '#ef4444' }}>
+                          No longer available — remove to continue
+                        </p>
+                      )}
+
+                      <div className="cart-line__actions">
+                        <div className="qty">
+                          <button
+                            type="button"
+                            onClick={() => void setQuantity(item.itemId, item.quantity - 1)}
+                            disabled={busy}
+                            aria-label={`Decrease quantity of ${item.name}`}
+                          >
+                            <Minus width={12} height={12} />
+                          </button>
+                          <span aria-live="polite" aria-label={`Quantity ${item.quantity}`}>
+                            {item.quantity}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => void setQuantity(item.itemId, item.quantity + 1)}
+                            disabled={busy || atMax}
+                            aria-label={`Increase quantity of ${item.name}`}
+                            title={atMax ? 'No more units available' : undefined}
+                          >
+                            <Plus width={12} height={12} />
+                          </button>
+                        </div>
+
                         <button
                           type="button"
-                          onClick={() => void setQuantity(it.itemId, it.quantity - 1)}
-                          disabled={busyKey === it.itemId}
-                          aria-label={`Decrease quantity of ${it.name}`}
+                          className="cart-line__remove"
+                          onClick={() => void remove(item.itemId)}
+                          disabled={busy}
                         >
-                          <Minus width={12} height={12} />
-                        </button>
-                        <span aria-live="polite">{it.quantity}</span>
-                        <button
-                          type="button"
-                          onClick={() => void setQuantity(it.itemId, it.quantity + 1)}
-                          disabled={
-                            busyKey === it.itemId ||
-                            (it.maxQuantity !== null && it.quantity >= it.maxQuantity)
-                          }
-                          aria-label={`Increase quantity of ${it.name}`}
-                        >
-                          <Plus width={12} height={12} />
+                          Remove
                         </button>
                       </div>
+                    </div>
+
+                    <p className="summary-item__price">{money(item.lineSubtotal)}</p>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+
+          {!empty && (
+            <div className="cart-coupon-group" style={{ display: 'grid', gap: 10 }}>
+              <form
+                className="cart-coupon"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  void submitCoupon()
+                }}
+              >
+                <label className="sr-only" htmlFor="coupon-code">
+                  Discount code
+                </label>
+                <input
+                  id="coupon-code"
+                  className="field__input"
+                  value={code}
+                  onChange={(event) => {
+                    setCode(event.target.value)
+                    if (couponError) clearCouponError()
+                  }}
+                  placeholder="Discount code"
+                  autoComplete="off"
+                />
+                <button type="submit" className="btn btn--outline" disabled={!code.trim()}>
+                  Apply
+                </button>
+              </form>
+
+              {couponError && (
+                <p className="field__error" role="alert">
+                  {couponError}
+                </p>
+              )}
+
+              {cart && cart.coupons.length > 0 && (
+                <ul className="cart-coupons">
+                  {cart.coupons.map((applied) => (
+                    <li key={applied}>
+                      <span>{applied}</span>
                       <button
                         type="button"
-                        className="cart-line__remove"
-                        onClick={() => void remove(it.itemId)}
-                        disabled={busyKey === it.itemId}
+                        onClick={() => void removeCoupon(applied)}
+                        aria-label={`Remove discount code ${applied}`}
                       >
                         Remove
                       </button>
-                    </div>
-
-                    {!it.inStock && (
-                      <p className="cart-line__warn">
-                        {it.available === 0
-                          ? 'Sold out — remove to continue.'
-                          : `Only ${it.available} available.`}
-                      </p>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          {items.length > 0 && (
-            <form
-              className="cart-coupon"
-              onSubmit={(e) => {
-                e.preventDefault()
-                if (coupon.trim()) void applyCoupon(coupon).then((ok) => ok && setCoupon(''))
-              }}
-            >
-              <label className="sr-only" htmlFor="coupon">
-                Discount code
-              </label>
-              <input
-                id="coupon"
-                className="field__input"
-                placeholder="Discount code"
-                value={coupon}
-                onChange={(e) => {
-                  setCoupon(e.target.value)
-                  if (couponError) clearCouponError()
-                }}
-              />
-              <button type="submit" className="btn btn--outline">
-                Apply
-              </button>
-            </form>
-          )}
-
-          {couponError && (
-            <p className="field__error" role="alert">
-              {couponError}
-            </p>
-          )}
-
-          {coupons.length > 0 && (
-            <ul className="cart-coupons">
-              {coupons.map((c) => (
-                <li key={c.code} className={c.accepted ? '' : 'is-rejected'}>
-                  <span>{c.code}</span>
-                  {c.accepted ? (
-                    <button type="button" onClick={() => void removeCoupon(c.code)}>
-                      Remove
-                    </button>
-                  ) : (
-                    <em>{c.message ?? 'Not applied'}</em>
-                  )}
-                </li>
-              ))}
-            </ul>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
         </div>
 
-        {items.length > 0 && totals && (
-          <footer className="cart-drawer__foot">
+        {!empty && cart && (
+          <div className="cart-drawer__foot">
             <dl className="summary-totals summary-totals--compact">
               <div>
                 <dt>Subtotal</dt>
-                <dd>{money(totals.subtotal)}</dd>
+                <dd>{money(cart.totals.subtotal)}</dd>
               </div>
-              {totals.discountTotal > 0 && (
+
+              {cart.totals.discountTotal > 0 && (
                 <div>
                   <dt>Discount</dt>
-                  <dd>−{money(totals.discountTotal)}</dd>
+                  <dd>−{money(cart.totals.discountTotal)}</dd>
                 </div>
               )}
-              {totals.taxTotal > 0 && (
+
+              {cart.totals.shippingTotal > 0 && (
                 <div>
-                  <dt>Tax</dt>
-                  <dd>{money(totals.taxTotal)}</dd>
+                  <dt>Shipping</dt>
+                  <dd>{money(cart.totals.shippingTotal)}</dd>
                 </div>
               )}
+
+              {cart.totals.taxTotal > 0 && (
+                <div>
+                  <dt>{cart.tax.label ?? 'Tax'}</dt>
+                  <dd>{money(cart.totals.taxTotal)}</dd>
+                </div>
+              )}
+
               <div className="summary-totals__grand">
                 <dt>Total</dt>
-                <dd>{money(totals.grandTotal)}</dd>
+                <dd>{money(cart.totals.grandTotal)}</dd>
               </div>
             </dl>
 
             <p className="cart-drawer__hint">
-              Shipping is calculated at checkout once we know the destination.
+              {cart.totals.shippingTotal === 0 && cart.needsShipping
+                ? 'Delivery is calculated at checkout once the destination is known.'
+                : 'Tax and delivery are confirmed by our store at checkout.'}
             </p>
 
-            <AppLink href="/checkout" className="btn btn--solid btn--block" onClick={closeDrawer}>
-              Checkout
-            </AppLink>
-          </footer>
+            <button
+              type="button"
+              className="btn btn--solid btn--block"
+              disabled={hasIssues}
+              onClick={() => {
+                closeDrawer()
+                navigate('/checkout')
+              }}
+            >
+              Proceed to checkout
+            </button>
+
+            <button
+              type="button"
+              className="cart-drawer__alt"
+              onClick={closeDrawer}
+            >
+              Continue browsing
+            </button>
+          </div>
         )}
       </aside>
     </>
   )
 }
+
+export default CartDrawer

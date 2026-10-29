@@ -1,231 +1,204 @@
-import { useMemo, useState } from 'react'
-import type { Product } from '../../data/types'
-import { resolvePurchaseUrl } from '../../lib/purchase'
+import { useEffect, useState } from 'react'
 import { useCart } from '../../lib/cart'
-import { ArrowUpRight, Check, Info } from './Icons'
+import { formatMinor, errorLabel } from '../../lib/api/client'
+import { storeEnabled } from '../../config/store'
+import type { CatalogueProduct } from '../../lib/catalogue'
+import { Info } from './Icons'
 
 interface BuyButtonProps {
-  product: Product
-  variant?: 'solid' | 'outline' | 'link'
-  block?: boolean
-  label?: string
-  /** Show size chips when the product has variants */
-  showVariants?: boolean
-  /** Show the quantity stepper (off inside compact contexts like Quick View) */
-  showQty?: boolean
-  onNavigate?: () => void
+  product: CatalogueProduct
+  /** Compact variant for the quick-view panel. */
+  compact?: boolean
 }
 
-type Notice = 'none' | 'choose-size' | 'no-store-id' | 'no-variation' | 'added'
-
 /**
- * Buying always ends on the WordPress / WooCommerce store.
- * This site has no payment, checkout or stock logic.
+ * BUY BUTTON
+ * ------------------------------------------------------------------
+ * The only place a purchase starts.
  *
- * "Add to cart" only works when the piece and (if it has sizes) the chosen
- * size carry a WooCommerce ID. Otherwise we say exactly what is missing
- * instead of silently doing nothing or inventing a link.
+ * What it does NOT do: compute a price, decide availability, or assume
+ * anything about stock. It sends a product id and a quantity, and renders
+ * whatever the server returns. If the server says the piece is gone, the
+ * button says so and stops.
+ *
+ * Two states deserve their own copy, because collapsing them into one
+ * loses information the customer needs:
+ *   • sold-out      — cannot be bought at all
+ *   • made-to-order — CAN be bought, but is made after the order
  */
-export function BuyButton({
-  product,
-  variant = 'solid',
-  block = true,
-  label = 'Add to cart',
-  showVariants = true,
-  showQty = true,
-  onNavigate,
-}: BuyButtonProps) {
-  const variants = product.variants ?? []
-  const { addItem, openCart } = useCart()
-  const [selected, setSelected] = useState<string | undefined>(
-    variants.length === 1 ? variants[0].id : undefined,
-  )
-  const [qty, setQty] = useState(1)
-  const [notice, setNotice] = useState<Notice>('none')
+export function BuyButton({ product, compact = false }: BuyButtonProps) {
+  const { add, busyKey, error, clearError, cart } = useCart()
+  const enabled = storeEnabled()
 
-  const selectedVariant = useMemo(
-    () => variants.find((v) => v.id === selected),
-    [variants, selected],
+  const buyable = product.variants.filter((v) => v.inStock)
+  const hasVariants = product.variants.length > 0
+
+  /**
+   * Default to the first option that can actually be bought. Selecting a
+   * sold-out size by default was the reason a customer could press "add"
+   * on a piece the page had just labelled unavailable.
+   */
+  const [selected, setSelected] = useState<string | null>(
+    hasVariants ? (buyable[0]?.id ?? product.variants[0].id) : null,
   )
 
-  const availability = product.availability
-  const archived = availability === 'sold-out'
-  const backOrder = availability === 'made-to-order'
-  const enquiry = availability === 'enquire'
-  const hasVariants = variants.length > 0
+  // A different product means a different option set.
+  useEffect(() => {
+    setSelected(hasVariants ? (buyable[0]?.id ?? product.variants[0].id) : null)
+    clearError()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [product.id])
 
-  const storeUrl = resolvePurchaseUrl(product, selected)
+  const busy = busyKey === product.id
+  const variant = hasVariants ? product.variants.find((v) => v.id === selected) : undefined
 
-  const handleAdd = () => {
-    if (archived) return
-
-    if (hasVariants && !selected) {
-      setNotice('choose-size')
-      return
-    }
-
-    const result = addItem(product, { variant: selectedVariant, qty })
-
-    if (result === 'added') {
-      setNotice('added')
-      openCart()
-      onNavigate?.()
-      return
-    }
-
-    /* 'unavailable' is already handled by the archived/enquiry branch above. */
-    if (result !== 'unavailable') setNotice(result)
-  }
-
-  const buttonClass =
-    variant === 'solid' ? 'btn btn--solid' : variant === 'outline' ? 'btn btn--outline' : 'btn btn--link'
-
-  const buttonLabel = archived
-    ? 'Archived — not for sale'
-    : hasVariants && !selected
-      ? 'Choose a size'
-      : backOrder
-        ? 'Order via our store'
-        : label
-
-  const noticeText: Record<Exclude<Notice, 'none' | 'added'>, string> = {
-    'choose-size': 'Select a size to continue.',
-    'no-store-id':
-      'This piece has no WooCommerce ID yet. Add `wooId` in src/data/products.ts to enable the cart.',
-    'no-variation':
-      'This size has no WooCommerce variation ID yet. Add `wooVariationId` in src/data/products.ts.',
-  }
-
-  /* Archive pieces and enquiries are not sold through the cart. */
-  if (archived || enquiry) {
+  /* ---- Not connected ---- */
+  if (!enabled) {
     return (
       <div className="buy">
-        {showVariants && hasVariants && (
-          <fieldset className="buy__variants">
-            <legend className="buy__legend">Size</legend>
-            <div className="chip-row">
-              {variants.map((v) => (
-                <button
-                  key={v.id}
-                  type="button"
-                  className={`chip ${selected === v.id ? 'is-active' : ''}`}
-                  aria-pressed={selected === v.id}
-                  onClick={() => setSelected(v.id)}
-                >
-                  {v.label}
-                </button>
-              ))}
-            </div>
-          </fieldset>
-        )}
-
-        {enquiry ? (
-          <a className={`${buttonClass} ${block ? 'btn--block' : ''}`} href="#enquiry">
-            <span>Enquire about this piece</span>
-            <ArrowUpRight width={14} height={14} />
-          </a>
-        ) : (
-          <button type="button" className={`${buttonClass} ${block ? 'btn--block' : ''}`} disabled>
-            <span>Archived — not for sale</span>
-          </button>
-        )}
-
-        <p className="buy__note">
-          {enquiry
-            ? 'Back-order and archive pieces are arranged directly with the studio.'
-            : 'This piece has been archived and is no longer available.'}
+        <p className="buy__notice" role="status">
+          <Info width={14} height={14} aria-hidden="true" />
+          <span>
+            This build runs as a catalogue. Publishing is switched off, so pieces cannot be bought
+            here.
+          </span>
         </p>
       </div>
     )
   }
 
+  /* ---- Cannot be bought ---- */
+  if (product.availability === 'sold-out') {
+    return (
+      <div className="buy">
+        <p className="buy__notice" role="status">
+          <Info width={14} height={14} aria-hidden="true" />
+          <span>
+            This piece has sold. Every firing is different, so it will not be repeated exactly —
+            browse the collection for what is currently available.
+          </span>
+        </p>
+      </div>
+    )
+  }
+
+  if (product.availability === 'enquire') {
+    return (
+      <div className="buy">
+        <p className="buy__notice" role="status">
+          <Info width={14} height={14} aria-hidden="true" />
+          <span>
+            This piece is offered by enquiry rather than direct purchase. Contact the studio and we
+            will discuss availability and shipping.
+          </span>
+        </p>
+      </div>
+    )
+  }
+
+  /* ---- Everything else can be bought ---- */
+  const unitPrice = variant ? variant.price : product.price
+  const inCart = cart?.items.find(
+    (i) => i.productId === product.id && (i.variantId ?? null) === (variant?.id ?? null),
+  )
+  const atLimit =
+    variant?.available !== null &&
+    variant?.available !== undefined &&
+    (inCart?.quantity ?? 0) >= variant.available
+
+  const disabled = busy || (hasVariants && variant ? !variant.inStock : false) || atLimit
+
   return (
     <div className="buy">
-      {showVariants && hasVariants && (
+      {hasVariants && (
         <fieldset className="buy__variants">
-          <legend className="buy__legend">Size</legend>
+          <legend className="buy__legend">
+            {product.variants[0]?.optionName ?? 'Option'}
+          </legend>
+
           <div className="chip-row">
-            {variants.map((v) => (
-              <button
-                key={v.id}
-                type="button"
-                className={`chip ${selected === v.id ? 'is-active' : ''}`}
-                aria-pressed={selected === v.id}
-                onClick={() => {
-                  setSelected(v.id)
-                  setNotice('none')
-                }}
-              >
-                {v.label}
-              </button>
-            ))}
+            {product.variants.map((v) => {
+              const isSelected = v.id === selected
+              return (
+                <button
+                  key={v.id}
+                  type="button"
+                  className={`chip ${isSelected ? 'is-active' : ''} ${
+                    v.inStock ? '' : 'is-disabled'
+                  }`}
+                  aria-pressed={isSelected}
+                  disabled={!v.inStock}
+                  onClick={() => {
+                    setSelected(v.id)
+                    clearError()
+                  }}
+                  title={v.inStock ? undefined : 'This option has sold out'}
+                >
+                  {v.label}
+                  {!v.inStock && <span className="sr-only"> — sold out</span>}
+                </button>
+              )
+            })}
           </div>
+
+          {/* A sold-out option stays visible but unexplainable would be a
+              dead end, so say why it cannot be chosen. */}
+          {variant && !variant.inStock && (
+            <p className="buy__note">That option has sold out. Choose another size.</p>
+          )}
         </fieldset>
       )}
 
-      <div className={`buy__actions ${showQty ? '' : 'buy__actions--compact'}`}>
-        {showQty && (
-          <div className="qty qty--lg">
-            <button
-              type="button"
-              className="qty__btn"
-              onClick={() => setQty((n) => Math.max(1, n - 1))}
-              aria-label="Decrease quantity"
-              disabled={qty <= 1}
-            >
-              <span aria-hidden="true">−</span>
-            </button>
-            <span className="qty__value" aria-live="polite" aria-label={`Quantity ${qty}`}>
-              {qty}
-            </span>
-            <button
-              type="button"
-              className="qty__btn"
-              onClick={() => setQty((n) => Math.min(99, n + 1))}
-              aria-label="Increase quantity"
-              disabled={qty >= 99}
-            >
-              <span aria-hidden="true">+</span>
-            </button>
-          </div>
-        )}
+      <div className="cart-line__actions" style={{ marginTop: 0 }}>
+        <p className="product-info__price" style={{ fontSize: 17 }}>
+          {formatMinor(unitPrice, product.currency, product.minorUnit)}
+        </p>
 
-        <button
-          type="button"
-          onClick={handleAdd}
-          className={`${buttonClass} ${block ? 'btn--block' : ''} buy__add`}
-          aria-describedby={notice !== 'none' && notice !== 'added' ? `buy-notice-${product.id}` : undefined}
-        >
-          <span>{notice === 'added' ? 'Added to cart' : buttonLabel}</span>
-          {notice === 'added' ? <Check width={14} height={14} /> : <ArrowUpRight width={14} height={14} />}
-        </button>
+        {atLimit && (
+          <p className="buy__note" style={{ margin: 0 }}>
+            All available units are in your cart.
+          </p>
+        )}
       </div>
 
-      <p className="buy__note">
-        Checkout, payment and shipping are completed on our WordPress store. Demo prices are
-        illustrative, not live.
-        {storeUrl && (
-          <>
-            {' '}
-            <a
-              className="buy__direct"
-              href={storeUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Or buy this piece directly
-            </a>
-            .
-          </>
-        )}
-      </p>
+      <button
+        type="button"
+        className="btn btn--solid btn--block"
+        disabled={disabled}
+        aria-busy={busy}
+        onClick={async () => {
+          clearError()
+          await add({
+            productId: product.id,
+            variantId: variant?.id ?? null,
+            quantity: 1,
+          })
+        }}
+      >
+        {busy ? 'Adding…' : atLimit ? 'In your cart' : 'Add to cart'}
+      </button>
 
-      {notice !== 'none' && notice !== 'added' && (
-        <p className="buy__notice" id={`buy-notice-${product.id}`} role="status">
-          <Info width={14} height={14} aria-hidden="true" />
-          <span>{noticeText[notice]}</span>
+      {product.availability === 'made-to-order' && (
+        <p className="buy__note">
+          Made to order. This piece is thrown after the order is placed, so allow a few weeks
+          before dispatch. Your card is charged when the order is confirmed.
+        </p>
+      )}
+
+      {error && (
+        <p className="checkout-alert" role="alert">
+          {errorLabel(error)}
+        </p>
+      )}
+
+      {!compact && (
+        <p className="buy__note">
+          Stock and price are confirmed by our store when you add the piece. Nothing is charged
+          until checkout.
         </p>
       )}
     </div>
   )
 }
+
+export default BuyButton

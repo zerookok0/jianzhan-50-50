@@ -1,65 +1,53 @@
-import { applyBasisPoints, clampNonNegative, multiplyMoney, assertMoney } from '../lib/money.ts'
+import { applyBasisPoints, assertMoney, clampNonNegative } from '../lib/money.ts'
 
 /**
- * PRICING ENGINE
+ * PRICING
  * ------------------------------------------------------------------
- * Pure functions. No database, no HTTP, no clock. Everything is passed in
- * explicitly so the whole calculation is unit-testable and deterministic.
+ * Pure arithmetic. No database, no HTTP, no framework — which is why the
+ * tests in tests/pricing.test.mjs can assert exact integers.
  *
- * Order of operations (deliberate, and the usual cause of disputes):
- *   1. Line subtotal      = unit price × quantity
- *   2. Discounts          applied to the subtotal, allocated per line
- *   3. Tax                computed on the DISCOUNTED amount
- *   4. Shipping           computed on the discounted subtotal, then taxed
- *   5. Grand total        = discounted subtotal + tax + shipping
+ * THE TWO RULES THAT MATTER
  *
- * All amounts are integer minor units. No floats.
+ *   1. Discounts are distributed across lines with the largest-remainder
+ *      method, so the parts sum EXACTLY to the whole. Splitting a $10
+ *      discount three ways with naive rounding gives $9.99 and a one-cent
+ *      discrepancy that a customer will eventually notice.
+ *
+ *   2. Tax applies to the DISCOUNTED subtotal, not the gross. Taxes on
+ *      money the customer never paid is a refund waiting to happen.
  */
 
-export interface PricedLine {
+/* ---------------- Shapes ---------------- */
+
+export interface PriceLine {
   productId: string
   variantId: string | null
   name: string
   variantLabel: string
   sku: string
   quantity: number
+  /** Minor units, per unit. */
   unitPrice: number
   weightG: number
   taxClass: string
   requiresShipping: boolean
+  inventoryId: string | null
 }
 
 export interface DiscountAllocation {
-  /** Coupon code, or 'automatic'. */
   code: string
+  /** Total discount applied, in minor units. */
   amount: number
-  /** Per-product-id share of the discount, for accurate line-level tax. */
+  /** Per product id, so a line can show its own reduction. */
   perLine: Record<string, number>
 }
 
-export interface TaxLine {
+export interface ShippingLine {
+  methodId: string
   name: string
-  rateBp: number
-  /** Tax amount in minor units. */
   amount: number
-  /** Base the tax was computed on. */
-  taxableBase: number
-  pricesIncludeTax: boolean
+  taxClass?: string
 }
-
-export interface ComputedTotals {
-  subtotal: number
-  discountTotal: number
-  /** subtotal − discountTotal */
-  discountedSubtotal: number
-  taxTotal: number
-  shippingTotal: number
-  grandTotal: number
-  taxLines: TaxLine[]
-  discountAllocations: DiscountAllocation[]
-}
-
-/* ---------------- Tax rule shape (mirrors the tax_rules table) ---------------- */
 
 export interface TaxRule {
   id: string
@@ -74,259 +62,242 @@ export interface TaxRule {
   isActive: boolean
 }
 
-/**
- * Pick the most specific applicable rule for a product in a destination.
- * Specificity: country+region+class beats country+class beats class-only.
- * Returns null when nothing matches — the caller must treat that as "no
- * tax configured" rather than assuming zero tax is correct.
- */
-export function resolveTaxRule(
-  rules: TaxRule[],
-  args: { country: string | null; region: string | null; taxClass: string },
-): { rule: TaxRule | null; ambiguous: boolean } {
-  if (!args.country) return { rule: null, ambiguous: false }
-
-  const candidates = rules.filter((r) => {
-    if (!r.isActive) return false
-    const countryOk = r.countries.includes('*') || r.countries.includes(args.country!)
-    if (!countryOk) return false
-    const regionOk = !r.region || r.region === args.region
-    if (!regionOk) return false
-    const classOk = r.taxClass === '*' || r.taxClass === args.taxClass
-    return classOk
-  })
-
-  if (!candidates.length) return { rule: null, ambiguous: false }
-
-  const score = (r: TaxRule) =>
-    (r.countries.includes('*') ? 0 : 10) +
-    (r.region ? 5 : 0) +
-    (r.taxClass === '*' ? 0 : 3)
-
-  const sorted = [...candidates].sort((a, b) => {
-    const diff = score(b) - score(a)
-    if (diff !== 0) return diff
-    return a.position - b.position
-  })
-
-  // Two rules with identical specificity is a configuration error, not
-  // something to silently resolve by array order. We compare the raw
-  // specificity SCORE of the top two candidates, not their sorted order.
-  const topScore = score(sorted[0])
-  const ambiguous = sorted.length > 1 && score(sorted[1]) === topScore
-  return { rule: sorted[0], ambiguous }
+export interface Destination {
+  country: string | null
+  region: string | null
 }
 
-/* ---------------- Line subtotals ---------------- */
-
-export function computeSubtotal(lines: PricedLine[]): number {
-  return lines.reduce((sum, l) => sum + multiplyMoney(l.unitPrice, l.quantity), 0)
+export interface Totals {
+  subtotal: number
+  discountTotal: number
+  discountedSubtotal: number
+  shippingTotal: number
+  taxTotal: number
+  grandTotal: number
+  taxLabel: string | null
+  taxRateBp: number
+  taxIncludedInPrices: boolean
+  /** Per-line discount, keyed by product id, so a row can display it. */
+  perLineDiscount: Record<string, number>
 }
 
-export function totalWeight(lines: PricedLine[]): number {
-  return lines.reduce((sum, l) => {
-    if (!l.requiresShipping) return sum
-    return sum + l.weightG * l.quantity
+/* ---------------- Subtotal ---------------- */
+
+export function computeSubtotal(lines: PriceLine[]): number {
+  return lines.reduce((sum, line) => {
+    assertMoney(line.unitPrice, 'unitPrice')
+    return sum + line.unitPrice * line.quantity
   }, 0)
+}
+
+export function totalWeight(lines: PriceLine[]): number {
+  return lines.reduce(
+    (sum, line) => (line.requiresShipping ? sum + line.weightG * line.quantity : sum),
+    0,
+  )
+}
+
+export function lineTotal(line: PriceLine): number {
+  return line.unitPrice * line.quantity
 }
 
 /* ---------------- Discount allocation ---------------- */
 
 /**
- * Spread a whole-order discount across lines in proportion to their
- * subtotal, using largest-remainder so the parts sum EXACTLY to the total.
+ * Split `total` across lines proportional to their subtotals, using the
+ * largest-remainder method so the allocation sums exactly to `total`.
  *
- * Naive proportional rounding leaves a cent unallocated, which then shows
- * up as a tax discrepancy. Largest-remainder guarantees exactness.
+ * Capped at the subtotal: a discount can never make an order negative.
  */
 export function allocateDiscount(
-  lines: PricedLine[],
-  totalDiscount: number,
+  lines: PriceLine[],
+  total: number,
   code: string,
 ): DiscountAllocation {
-  assertMoney(totalDiscount, 'totalDiscount')
-  if (totalDiscount <= 0 || lines.length === 0) {
+  assertMoney(total, 'discount total')
+
+  const subtotal = computeSubtotal(lines)
+  if (subtotal <= 0 || total <= 0) {
     return { code, amount: 0, perLine: {} }
   }
 
-  const lineTotals = lines.map((l) => ({
-    id: lineKey(l),
-    subtotal: multiplyMoney(l.unitPrice, l.quantity),
-  }))
-  const subtotal = lineTotals.reduce((s, l) => s + l.subtotal, 0)
-  if (subtotal === 0) return { code, amount: 0, perLine: {} }
+  const capped = Math.min(total, subtotal)
 
-  // Cap the discount at the subtotal — never discount below zero.
-  const capped = Math.min(totalDiscount, subtotal)
+  const shares = lines.map((line) => {
+    const lineSum = lineTotal(line)
+    const exact = (lineSum * capped) / subtotal
+    return {
+      key: line.productId,
+      floor: Math.floor(exact),
+      remainder: exact - Math.floor(exact),
+    }
+  })
 
-  const exact = lineTotals.map((l) => (l.subtotal * capped) / subtotal)
-  const floored = exact.map((v) => Math.floor(v))
-  let remainder = capped - floored.reduce((s, v) => s + v, 0)
+  let allocated = shares.reduce((sum, share) => sum + share.floor, 0)
+  let leftover = capped - allocated
 
-  // Hand out the leftover cents to the lines with the largest fractional part.
-  const order = exact
-    .map((v, i) => ({ i, frac: v - Math.floor(v) }))
-    .sort((a, b) => b.frac - a.frac || a.i - b.i)
+  // Hand out the remaining cents, largest remainder first. Ties break on
+  // the key so the result is deterministic (a test that changes answer
+  // between runs is worse than no test).
+  const ordered = [...shares].sort((a, b) => {
+    if (b.remainder !== a.remainder) return b.remainder - a.remainder
+    return a.key.localeCompare(b.key)
+  })
 
-  const allocated = [...floored]
-  for (let k = 0; k < order.length && remainder > 0; k++) {
-    allocated[order[k].i] += 1
-    remainder--
+  for (const share of ordered) {
+    if (leftover <= 0) break
+    share.floor += 1
+    leftover -= 1
   }
 
   const perLine: Record<string, number> = {}
-  lineTotals.forEach((l, i) => {
-    if (allocated[i] > 0) perLine[l.id] = allocated[i]
-  })
+  for (const share of shares) {
+    if (share.floor > 0) perLine[share.key] = (perLine[share.key] ?? 0) + share.floor
+  }
 
-  return { code, amount: capped, perLine }
+  allocated = Object.values(perLine).reduce((sum, v) => sum + v, 0)
+
+  return { code, amount: allocated, perLine }
 }
 
-export function lineKey(l: PricedLine): string {
-  return l.variantId ? `${l.productId}:${l.variantId}` : l.productId
+/* ---------------- Tax ---------------- */
+
+/**
+ * Choose the most specific rule for a destination and tax class.
+ *
+ * Specificity, highest first:
+ *   country + region + tax class
+ *   country + tax class
+ *   country
+ *   wildcard
+ *
+ * Two rules at the same specificity is a configuration error, and the
+ * caller is told so rather than silently getting whichever sorted first.
+ */
+export function resolveTaxRule(
+  rules: TaxRule[],
+  request: Destination & { taxClass?: string },
+): { rule: TaxRule | null; ambiguous: boolean } {
+  const country = request.country?.toUpperCase() ?? ''
+  const region = request.region?.toUpperCase() ?? ''
+  const taxClass = request.taxClass ?? 'standard'
+
+  const candidates = rules
+    .filter((rule) => rule.isActive)
+    .map((rule) => {
+      const countryMatch = rule.countries.some(
+        (c) => c === '*' || c.toUpperCase() === country,
+      )
+      if (!countryMatch) return null
+
+      const regionMatch = !rule.region || rule.region.toUpperCase() === region
+      if (!regionMatch) return null
+
+      const classMatch = rule.taxClass === '*' || rule.taxClass === taxClass
+      if (!classMatch) return null
+
+      let score = 0
+      if (rule.countries.some((c) => c !== '*')) score += 4
+      if (rule.region) score += 2
+      if (rule.taxClass !== '*') score += 1
+
+      return { rule, score }
+    })
+    .filter((entry): entry is { rule: TaxRule; score: number } => entry !== null)
+
+  if (candidates.length === 0) return { rule: null, ambiguous: false }
+
+  const best = Math.max(...candidates.map((c) => c.score))
+  const winners = candidates.filter((c) => c.score === best)
+
+  return {
+    rule: winners[0].rule,
+    ambiguous: winners.length > 1,
+  }
 }
 
-/* ---------------- Full computation ---------------- */
+/* ---------------- Totals ---------------- */
 
-export interface ShippingSelection {
-  methodId: string
-  name: string
-  /** Total shipping in minor units, already computed by shipping service. */
-  amount: number
-  /** Tax class applied to shipping, if the jurisdiction taxes it. */
-  taxClass?: string
-}
-
-export interface ComputeInput {
-  lines: PricedLine[]
+export interface ComputeTotalsInput {
+  lines: PriceLine[]
   discounts: DiscountAllocation[]
-  shipping: ShippingSelection | null
+  shipping: ShippingLine | null
   taxRules: TaxRule[]
-  destination: { country: string | null; region: string | null }
+  destination: Destination
 }
 
-export function computeTotals(input: ComputeInput): ComputedTotals {
+export function computeTotals(input: ComputeTotalsInput): Totals {
   const { lines, discounts, shipping, taxRules, destination } = input
 
   const subtotal = computeSubtotal(lines)
-  const discountTotal = discounts.reduce((s, d) => s + d.amount, 0)
-  const discountedSubtotal = clampNonNegative(subtotal - discountTotal)
 
-  /* ---- Per-line discount share ---- */
-  const discountByLine: Record<string, number> = {}
-  for (const d of discounts) {
-    for (const [key, amount] of Object.entries(d.perLine)) {
-      discountByLine[key] = (discountByLine[key] ?? 0) + amount
+  const discountTotal = Math.min(
+    subtotal,
+    discounts.reduce((sum, d) => sum + Math.max(0, d.amount), 0),
+  )
+
+  const perLineDiscount: Record<string, number> = {}
+  for (const discount of discounts) {
+    for (const [productId, amount] of Object.entries(discount.perLine)) {
+      perLineDiscount[productId] = (perLineDiscount[productId] ?? 0) + amount
     }
   }
 
-  /* ---- Tax, per line, on the discounted amount ---- */
-  const taxBuckets = new Map<string, TaxLine>()
+  const discountedSubtotal = subtotal - discountTotal
+  const shippingTotal = shipping ? clampNonNegative(shipping.amount) : 0
+
+  /* ---- Tax ---- */
+
+  const { rule } = resolveTaxRule(taxRules, {
+    ...destination,
+    taxClass: 'standard',
+  })
+
+  const rateBp = rule?.rateBp ?? 0
+  const taxIncludedInPrices = rule?.pricesIncludeTax ?? false
+  const rounding = rule?.rounding ?? 'round'
+
   let taxTotal = 0
-  /**
-   * Tax already contained in the listed prices. When prices are
-   * tax-inclusive the extracted tax is PART of the line price, not an
-   * addition to it, so it must be excluded from the grand total while
-   * still being reported on the invoice.
-   */
-  let taxIncludedInPrices = 0
 
-  for (const line of lines) {
-    const key = lineKey(line)
-    const gross = multiplyMoney(line.unitPrice, line.quantity)
-    const discounted = clampNonNegative(gross - (discountByLine[key] ?? 0))
-    if (discounted === 0) continue
+  if (rule && rateBp > 0) {
+    if (taxIncludedInPrices) {
+      // The listed price already contains tax: EXTRACT it. The usual
+      // mistake is to add it on top, which inflates every receipt by the
+      // VAT rate while still "showing VAT" plausibly.
+      const grossWithTax = discountedSubtotal + shippingTotal
+      taxTotal = applyBasisPoints(grossWithTax, rateBp, rounding)
+      const net = grossWithTax - taxTotal
 
-    const { rule } = resolveTaxRule(taxRules, {
-      country: destination.country,
-      region: destination.region,
-      taxClass: line.taxClass,
-    })
-    if (!rule || rule.rateBp === 0) continue
-
-    // Inclusive: extract the tax already inside the price.
-    // Exclusive: compute the tax to add on top.
-    const taxableBase = rule.pricesIncludeTax
-      ? Math.round((discounted * 10000) / (10000 + rule.rateBp))
-      : discounted
-
-    const taxAmount = rule.pricesIncludeTax
-      ? discounted - taxableBase
-      : applyBasisPoints(discounted, rule.rateBp, rule.rounding)
-
-    taxTotal += taxAmount
-    if (rule.pricesIncludeTax) taxIncludedInPrices += taxAmount
-
-    const bucketKey = `${rule.id}:${line.taxClass}`
-    const existing = taxBuckets.get(bucketKey)
-    if (existing) {
-      existing.amount += taxAmount
-      existing.taxableBase += taxableBase
-    } else {
-      taxBuckets.set(bucketKey, {
-        name: rule.name,
-        rateBp: rule.rateBp,
-        amount: taxAmount,
-        taxableBase,
-        pricesIncludeTax: rule.pricesIncludeTax,
-      })
-    }
-  }
-
-  /* ---- Shipping (taxed with the 'shipping' class when a rule exists) ---- */
-  let shippingTotal = shipping?.amount ?? 0
-  if (shipping && shipping.amount > 0) {
-    const { rule } = resolveTaxRule(taxRules, {
-      country: destination.country,
-      region: destination.region,
-      taxClass: shipping.taxClass ?? 'shipping',
-    })
-    if (rule && rule.rateBp > 0 && !rule.pricesIncludeTax) {
-      const shippingTax = applyBasisPoints(shipping.amount, rule.rateBp, rule.rounding)
-      taxTotal += shippingTax
-      const bucketKey = `${rule.id}:shipping`
-      const existing = taxBuckets.get(bucketKey)
-      if (existing) {
-        existing.amount += shippingTax
-        existing.taxableBase += shipping.amount
-      } else {
-        taxBuckets.set(bucketKey, {
-          name: `${rule.name} (shipping)`,
-          rateBp: rule.rateBp,
-          amount: shippingTax,
-          taxableBase: shipping.amount,
-          pricesIncludeTax: false,
-        })
+      return {
+        subtotal,
+        discountTotal,
+        discountedSubtotal,
+        shippingTotal,
+        taxTotal,
+        // Grand total is the price the customer was quoted. Tax is a
+        // component of it, not an addition to it.
+        grandTotal: net + taxTotal,
+        taxLabel: rule.name,
+        taxRateBp: rateBp,
+        taxIncludedInPrices,
+        perLineDiscount,
       }
-    } else if (rule && rule.pricesIncludeTax) {
-      // Shipping price already includes tax; do not add anything.
-      shippingTotal = shipping.amount
     }
-  }
 
-  // Tax-inclusive amounts are already inside discountedSubtotal, so only
-  // the tax that must be ADDED (exclusive rules) belongs in the total.
-  const grandTotal = discountedSubtotal + (taxTotal - taxIncludedInPrices) + shippingTotal
+    const taxable = discountedSubtotal + shippingTotal
+    taxTotal = applyBasisPoints(taxable, rateBp, rounding)
+  }
 
   return {
     subtotal,
     discountTotal,
     discountedSubtotal,
-    taxTotal,
     shippingTotal,
-    grandTotal,
-    taxLines: [...taxBuckets.values()],
-    discountAllocations: discounts,
+    taxTotal,
+    grandTotal: discountedSubtotal + shippingTotal + taxTotal,
+    taxLabel: rule?.name ?? null,
+    taxRateBp: rateBp,
+    taxIncludedInPrices,
+    perLineDiscount,
   }
-}
-
-/** Human-readable summary, used by the quote endpoint and tests. */
-export function describeTotals(t: ComputedTotals): string {
-  return [
-    `subtotal=${t.subtotal}`,
-    `discount=${t.discountTotal}`,
-    `tax=${t.taxTotal}`,
-    `shipping=${t.shippingTotal}`,
-    `grand=${t.grandTotal}`,
-  ].join(' ')
 }

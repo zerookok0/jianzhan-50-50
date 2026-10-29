@@ -1,57 +1,70 @@
 import { useEffect, useState } from 'react'
-import type { Product } from '../../data/types'
-import { formatPrice, availabilityLabels } from '../../data/products'
-import { site } from '../../data/site'
 import { Modal } from './Modal'
-import { MediaImage, AppLink } from './Media'
-import { FavButton } from './FavButton'
+import { ProductImage, AppLink } from './Media'
 import { BuyButton } from './BuyButton'
-import { Close } from './Icons'
+import { formatMinor } from '../../lib/api/client'
+import type { CatalogueProduct } from '../../lib/catalogue'
 
 interface QuickViewProps {
-  product: Product | null
+  product: CatalogueProduct | null
   onClose: () => void
 }
 
+/**
+ * QUICK VIEW
+ * ------------------------------------------------------------------
+ * A short, fast look at a piece without leaving the grid.
+ *
+ * It deliberately does not duplicate the product page: no specification
+ * table, no accordions, no related pieces. Those belong to the full page,
+ * and reproducing them here would make the panel as heavy as the page it
+ * is meant to save you from visiting.
+ *
+ * The buy control is the real one, so adding from here carries the same
+ * server checks as adding from anywhere else.
+ */
 export function QuickView({ product, onClose }: QuickViewProps) {
   const [active, setActive] = useState(0)
 
-  // Reset the previewed image whenever a different piece is opened.
   useEffect(() => {
     setActive(0)
   }, [product?.id])
 
   if (!product) return null
-  const images = product.images
+
+  const images = product.images.length ? product.images : ['']
 
   return (
-    <Modal open={Boolean(product)} onClose={onClose} labelledBy="qv-title" variant="center">
+    <Modal
+      open={Boolean(product)}
+      onClose={onClose}
+      label={`${product.name} quick view`}
+      variant="center"
+      labelledBy="qv-title"
+    >
       <div className="qv">
-        <button type="button" className="qv__close" onClick={onClose} aria-label="Close quick view">
-          <Close width={16} height={16} />
-        </button>
-
         <div className="qv__media">
-          <MediaImage
-            image={images[Math.min(active, images.length - 1)]}
-            alt={`${product.name} — detail ${active + 1}`}
+          <ProductImage
+            src={images[active]}
+            alt={`${product.name} — ${product.subtitle}`}
             ratio={1}
-            sizes="(min-width: 900px) 40vw, 92vw"
-            showFallbackNote
+            sizes="(min-width: 860px) 46vw, 92vw"
+            priority
           />
+
           {images.length > 1 && (
-            <div className="qv__thumbs" role="tablist" aria-label="Product images">
-              {images.map((im, i) => (
+            <div className="qv__thumbs" role="tablist" aria-label="Piece images">
+              {images.slice(0, 4).map((image, i) => (
                 <button
-                  key={im + i}
+                  key={`${image}-${i}`}
                   type="button"
                   role="tab"
                   aria-selected={i === active}
-                  aria-label={`Image ${i + 1}`}
+                  aria-label={`Show image ${i + 1}`}
                   className={`qv__thumb ${i === active ? 'is-active' : ''}`}
                   onClick={() => setActive(i)}
                 >
-                  <MediaImage image={im} alt="" ratio={1} sizes="80px" />
+                  <ProductImage src={image} alt="" ratio={1} sizes="90px" />
                 </button>
               ))}
             </div>
@@ -59,34 +72,42 @@ export function QuickView({ product, onClose }: QuickViewProps) {
         </div>
 
         <div className="qv__body">
-          <p className="eyebrow">{availabilityLabels[product.availability]} · {product.year}</p>
-          <h2 id="qv-title" className="display display--md qv__title">
+          <p className="eyebrow">
+            {String(product.glaze).replace('-', ' ')}
+            {product.year ? ` · ${product.year}` : ''}
+          </p>
+
+          <h2 className="display display--md qv__title" id="qv-title">
             {product.name}
           </h2>
-          <p className="qv__sub serif-italic">{product.subtitle}</p>
-          <p className="qv__price">{formatPrice(product.price, product.currency)}</p>
+
+          <p className="serif-italic qv__sub">{product.subtitle}</p>
+
+          <p className="qv__price">
+            {product.variants.length > 1 && product.fromPrice !== product.price ? 'From ' : ''}
+            {formatMinor(product.fromPrice, product.currency, product.minorUnit)}
+          </p>
+
           <p className="body qv__desc">{product.description}</p>
 
-          <dl className="specs specs--compact">
-            {product.specifications.slice(0, 4).map((s) => (
-              <div key={s.label} className="specs__row">
-                <dt>{s.label}</dt>
-                <dd>{s.value}</dd>
-              </div>
-            ))}
-          </dl>
-
-          <BuyButton product={product} showQty={false} onNavigate={onClose} />
+          <BuyButton product={product} compact />
 
           <div className="qv__foot">
-            <FavButton productId={product.id} productName={product.name} variant="labelled" />
-            <AppLink href={`/collection/${product.slug}`} className="btn btn--link qv__detail" onClick={onClose}>
+            <AppLink
+              href={`/collection/${product.slug}`}
+              className="btn btn--link qv__detail"
+              onClick={onClose}
+            >
               Full details
             </AppLink>
+            <span className="qv__data-note">
+              {product.source === 'api' ? 'Live stock' : 'Offline catalogue'}
+            </span>
           </div>
-
-          <p className="qv__data-note">Demo catalogue · {site.brand} — prices illustrative only.</p>        </div>
+        </div>
       </div>
     </Modal>
   )
 }
+
+export default QuickView

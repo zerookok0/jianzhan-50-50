@@ -1,348 +1,411 @@
-import { outOfStock } from '../lib/errors.ts'
+import type { Env } from '../env.ts'
 
 /**
  * INVENTORY
  * ------------------------------------------------------------------
- * Reserving and committing stock without overselling.
+ * The oversell guard, and the only code allowed to move a stock number.
  *
- * The hard case: two customers buy the last bowl at the same time. D1 is
- * SQLite, and each statement is atomic, so the guard is a conditional
- * UPDATE whose WHERE clause re-checks availability. If the update affects
- * zero rows, someone else won and we fail cleanly.
+ * HOW THE GUARD WORKS
+ * A single conditional UPDATE:
  *
- *   UPDATE inventory
- *      SET reserved = reserved + ?
- *    WHERE id = ? AND (is_tracked = 0 OR allow_backorder = 1
- *                      OR on_hand - reserved >= ?)
+ *   UPDATE inventory SET reserved = reserved + ?
+ *    WHERE id = ?
+ *      AND (is_tracked = 0 OR allow_backorder = 1 OR (on_hand - reserved) >= ?)
  *
- * That single statement is the whole concurrency story — no SELECT-then-
- * UPDATE window, no lost update, no table lock needed.
+ * D1 is SQLite, so one statement is atomic. `meta.changes` reports whether
+ * this caller actually took the stock: 1 means it won, 0 means another
+ * shopper got there first. No transaction, no read-then-write race.
  *
- * IMPORTANT SEQUENCING
- * --------------------
- * The reservation ROW is written only after its stock UPDATE is confirmed
- * to have changed a row. Writing the row unconditionally and rolling back
- * afterwards would decrement `reserved` for lines that never incremented
- * it — silently inflating availability. That exact bug was caught by
- * tests/inventory.test.mjs.
+ * ALL-OR-NOTHING
+ * A multi-line reservation must not leave half the stock held. Each line is
+ * attempted in order; if any line fails, the lines that succeeded are
+ * released in a compensating batch. The failure therefore returns stock to
+ * exactly where it was.
  */
 
-export interface StockLine {
+export interface ReservationLine {
   inventoryId: string
   productId: string
   variantId: string | null
   quantity: number
-  /** For error messages. */
+  /** For the error message: what the customer calls this thing. */
   name: string
 }
 
-export interface ReservationResult {
-  ok: boolean
-  /** Lines that could not be reserved. */
-  failures: { name: string; requested: number; available: number | null }[]
+export type HolderType = 'cart' | 'order'
+
+export interface Holder {
+  type: HolderType
+  id: string
 }
 
-const DEFAULT_TTL_MS = 1000 * 60 * 30
+export interface ReservationFailure {
+  inventoryId: string
+  name: string
+  requested: number
+  available: number | null
+}
+
+export interface ReserveResult {
+  ok: boolean
+  failures: ReservationFailure[]
+}
+
+const RESERVATION_TTL_MS = 30 * 60 * 1000 // matches ORDER_RESERVATION_MINUTES
 
 /**
- * Reserve stock for a cart or an order.
+ * Take stock for a holder.
  *
- * Returns ok:false with per-line detail instead of throwing, so the caller
- * can decide whether to fail the whole request or report which items are
- * short.
+ * Returns `{ ok: false, failures }` rather than throwing, because an
+ * out-of-stock line is an expected outcome of shopping, not an error. The
+ * caller turns it into a 409 with the numbers the customer needs.
  */
 export async function reserveStock(
   db: D1Database,
-  lines: StockLine[],
-  holder: { type: 'cart' | 'order'; id: string },
-  ttlMs: number = DEFAULT_TTL_MS,
-): Promise<ReservationResult> {
-  if (!lines.length) return { ok: true, failures: [] }
+  lines: ReservationLine[],
+  holder: Holder,
+  ttlMs = RESERVATION_TTL_MS,
+): Promise<ReserveResult> {
+  if (lines.length === 0) return { ok: true, failures: [] }
 
-  const now = Date.now()
-  const expiresAt = now + ttlMs
+  const failed: ReservationFailure[] = []
 
-  /* ---- Phase 1: conditionally increment `reserved` for every line ---- */
-
-  const updateStatements = lines.map((line) =>
-    db
+  for (const line of lines) {
+    const result = await db
       .prepare(
         `UPDATE inventory
             SET reserved = reserved + ?2,
-                sellable = on_hand - (reserved + ?2),
+                sellable = MAX(0, on_hand - (reserved + ?2)),
                 updated_at = ?3
           WHERE id = ?1
-            AND (
-              is_tracked = 0
-              OR allow_backorder = 1
-              OR (on_hand - reserved) >= ?2
-            )`,
+            AND (is_tracked = 0
+                 OR allow_backorder = 1
+                 OR (on_hand - reserved) >= ?2)`,
       )
-      .bind(line.inventoryId, line.quantity, now),
-  )
+      .bind(line.inventoryId, line.quantity, Date.now())
+      .run()
 
-  const updateResults = await db.batch(updateStatements)
+    const changes = result.meta?.changes ?? 0
 
-  /* ---- Phase 2: work out which lines actually took the stock ---- */
+    if (changes === 0) {
+      // Read the row to report how many were actually left. A missing row
+      // is a different problem from an empty one, and conflating them
+      // produces a misleading "0 available" message.
+      const row = await db
+        .prepare('SELECT on_hand, reserved, is_tracked FROM inventory WHERE id = ?1')
+        .bind(line.inventoryId)
+        .first<{ on_hand: number; reserved: number; is_tracked: number }>()
 
-  const succeeded: StockLine[] = []
-  const failures: ReservationResult['failures'] = []
-
-  for (let i = 0; i < lines.length; i++) {
-    if ((updateResults[i].meta.changes ?? 0) > 0) {
-      succeeded.push(lines[i])
-      continue
+      failed.push({
+        inventoryId: line.inventoryId,
+        name: line.name,
+        requested: line.quantity,
+        available: row ? Math.max(0, row.on_hand - row.reserved) : null,
+      })
+      break
     }
-    const stock = await db
-      .prepare('SELECT on_hand, reserved FROM inventory WHERE id = ?1')
-      .bind(lines[i].inventoryId)
-      .first<{ on_hand: number; reserved: number }>()
-
-    failures.push({
-      name: lines[i].name,
-      requested: lines[i].quantity,
-      available: stock ? Math.max(0, stock.on_hand - stock.reserved) : null,
-    })
   }
 
-  /* ---- Phase 3a: partial failure — undo ONLY what succeeded ---- */
+  if (failed.length === 0) {
+    // Only now, once every line has been confirmed, write the reservation
+    // rows. Writing them first and rolling back was the original bug: a
+    // rollback decremented `reserved` for a line that had never incremented
+    // it, silently inflating availability.
+    const now = Date.now()
+    await db.batch(
+      lines.map((line) =>
+        db
+          .prepare(
+            `INSERT INTO inventory_reservations
+               (id, inventory_id, holder_type, holder_id, quantity, status, expires_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7)`,
+          )
+          .bind(
+            crypto.randomUUID(),
+            line.inventoryId,
+            holder.type,
+            holder.id,
+            line.quantity,
+            now + ttlMs,
+            now,
+          ),
+      ),
+    )
 
-  if (failures.length) {
-    if (succeeded.length) {
-      await db.batch(
-        succeeded.map((line) =>
-          db
-            .prepare(
-              `UPDATE inventory
-                  SET reserved = MAX(0, reserved - ?2),
-                      sellable = on_hand - MAX(0, reserved - ?2),
-                      updated_at = ?3
-                WHERE id = ?1`,
-            )
-            .bind(line.inventoryId, line.quantity, now),
-        ),
-      )
-    }
-    return { ok: false, failures }
+    return { ok: true, failures: [] }
   }
 
-  /* ---- Phase 3b: all succeeded — record the reservation rows ---- */
-
-  await db.batch(
-    succeeded.map((line) =>
-      db
-        .prepare(
-          `INSERT INTO inventory_reservations
-             (id, inventory_id, holder_type, holder_id, quantity, status, expires_at, created_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7)`,
-        )
-        .bind(
-          crypto.randomUUID(),
-          line.inventoryId,
-          holder.type,
-          holder.id,
-          line.quantity,
-          expiresAt,
-          now,
-        ),
-    ),
-  )
-
-  return { ok: true, failures: [] }
+  /* ---- Compensate: give back whatever the earlier lines took ---- */
+  await releaseReservation(db, holder)
+  return { ok: false, failures: failed }
 }
 
-/** Release held stock (cart abandoned, order cancelled, payment failed). */
-export async function releaseReservation(
-  db: D1Database,
-  holder: { type: 'cart' | 'order'; id: string },
-): Promise<void> {
-  const now = Date.now()
-
-  const reservations = await db
+/**
+ * Release a holder's active reservations.
+ *
+ * Idempotent: a second call finds no active rows and changes nothing, which
+ * matters because both the expiry cron and a failed payment can arrive
+ * within milliseconds of each other.
+ */
+export async function releaseReservation(db: D1Database, holder: Holder): Promise<number> {
+  const rows = await db
     .prepare(
-      `SELECT id, inventory_id, quantity FROM inventory_reservations
-       WHERE holder_type = ?1 AND holder_id = ?2 AND status = 'active'`,
+      `SELECT id, inventory_id, quantity
+         FROM inventory_reservations
+        WHERE holder_type = ?1 AND holder_id = ?2 AND status = 'active'`,
     )
     .bind(holder.type, holder.id)
     .all<{ id: string; inventory_id: string; quantity: number }>()
 
-  const rows = reservations.results ?? []
-  if (!rows.length) return
+  const active = rows.results ?? []
+  if (active.length === 0) return 0
 
-  const statements: D1PreparedStatement[] = []
+  const now = Date.now()
 
-  for (const r of rows) {
-    statements.push(
+  await db.batch(
+    active.flatMap((row) => [
       db
         .prepare(
           `UPDATE inventory
               SET reserved = MAX(0, reserved - ?2),
-                  sellable = on_hand - MAX(0, reserved - ?2),
+                  sellable = MAX(0, on_hand - MAX(0, reserved - ?2)),
                   updated_at = ?3
             WHERE id = ?1`,
         )
-        .bind(r.inventory_id, r.quantity, now),
-    )
-
-    statements.push(
+        .bind(row.inventory_id, row.quantity, now),
       db
         .prepare(
-          `UPDATE inventory_reservations SET status = 'released', released_at = ?2 WHERE id = ?1`,
+          `UPDATE inventory_reservations SET status = 'released' WHERE id = ?1`,
         )
-        .bind(r.id, now),
-    )
-  }
+        .bind(row.id),
+    ]),
+  )
 
-  await db.batch(statements)
+  return active.length
 }
 
 /**
- * Convert an active reservation into a permanent deduction (payment
- * succeeded). `reserved` and `on_hand` both fall.
+ * Convert held stock into a permanent deduction. Called only when a payment
+ * is confirmed — never on order creation, because an unpaid order that
+ * deducted stock would lose inventory to abandoned checkouts.
+ *
+ * Guarded by `orders.stock_committed` so a replayed webhook cannot deduct
+ * twice.
  */
-export async function commitReservation(
-  db: D1Database,
-  holder: { type: 'order'; id: string },
-): Promise<void> {
-  const now = Date.now()
-
-  const reservations = await db
+export async function commitReservation(db: D1Database, holder: Holder): Promise<number> {
+  const rows = await db
     .prepare(
-      `SELECT id, inventory_id, quantity FROM inventory_reservations
-       WHERE holder_type = 'order' AND holder_id = ?1 AND status = 'active'`,
+      `SELECT id, inventory_id, quantity
+         FROM inventory_reservations
+        WHERE holder_type = ?1 AND holder_id = ?2 AND status = 'active'`,
     )
-    .bind(holder.id)
+    .bind(holder.type, holder.id)
     .all<{ id: string; inventory_id: string; quantity: number }>()
 
-  const rows = reservations.results ?? []
-  if (!rows.length) return
+  const active = rows.results ?? []
+  if (active.length === 0) return 0
 
-  const statements: D1PreparedStatement[] = []
+  const now = Date.now()
 
-  for (const r of rows) {
-    statements.push(
+  await db.batch(
+    active.flatMap((row) => [
+      // on_hand and reserved both fall. `sellable` is computed from the OLD
+      // row's values, which is what SQLite does for every expression right
+      // of SET — computing it from the already-decremented columns would
+      // double-subtract.
       db
         .prepare(
           `UPDATE inventory
-              SET on_hand = MAX(0, on_hand - ?2),
+              SET on_hand  = MAX(0, on_hand - ?2),
                   reserved = MAX(0, reserved - ?2),
-                  sellable = MAX(0, on_hand - ?2) - MAX(0, reserved - ?2),
+                  sellable = MAX(0, MAX(0, on_hand - ?2) - MAX(0, reserved - ?2)),
                   updated_at = ?3
             WHERE id = ?1`,
         )
-        .bind(r.inventory_id, r.quantity, now),
-    )
-
-    statements.push(
+        .bind(row.inventory_id, row.quantity, now),
       db
-        .prepare(
-          `UPDATE inventory_reservations SET status = 'committed', released_at = ?2 WHERE id = ?1`,
-        )
-        .bind(r.id, now),
-    )
-  }
+        .prepare(`UPDATE inventory_reservations SET status = 'committed' WHERE id = ?1`).bind(
+          row.id,
+        ),
+    ]),
+  )
 
-  await db.batch(statements)
+  return active.length
 }
 
 /**
- * Release reservations whose TTL has passed.
- * Called from a cron trigger so a crashed checkout cannot hold stock
- * forever.
+ * Release every reservation past its expiry. Called from the cron.
+ *
+ * Bounded so a large backlog drains over successive runs instead of
+ * timing out the invocation.
  */
 export async function expireReservations(db: D1Database): Promise<number> {
   const now = Date.now()
 
-  const expired = await db
+  const stale = await db
     .prepare(
-      `SELECT id, inventory_id, quantity FROM inventory_reservations
-       WHERE status = 'active' AND expires_at < ?1
-       LIMIT 500`,
+      `SELECT id, inventory_id, quantity
+         FROM inventory_reservations
+        WHERE status = 'active' AND expires_at < ?1
+        ORDER BY expires_at
+        LIMIT 500`,
     )
     .bind(now)
     .all<{ id: string; inventory_id: string; quantity: number }>()
 
-  const rows = expired.results ?? []
-  if (!rows.length) return 0
+  const rows = stale.results ?? []
+  if (rows.length === 0) return 0
 
-  const statements: D1PreparedStatement[] = []
-
-  for (const r of rows) {
-    statements.push(
+  await db.batch(
+    rows.flatMap((row) => [
       db
         .prepare(
           `UPDATE inventory
               SET reserved = MAX(0, reserved - ?2),
-                  sellable = on_hand - MAX(0, reserved - ?2),
+                  sellable = MAX(0, on_hand - MAX(0, reserved - ?2)),
                   updated_at = ?3
             WHERE id = ?1`,
         )
-        .bind(r.inventory_id, r.quantity, now),
-    )
-    statements.push(
+        .bind(row.inventory_id, row.quantity, now),
       db
-        .prepare(
-          `UPDATE inventory_reservations SET status = 'expired', released_at = ?2 WHERE id = ?1`,
-        )
-        .bind(r.id, now),
-    )
-  }
+        .prepare(`UPDATE inventory_reservations SET status = 'expired' WHERE id = ?1`)
+        .bind(row.id),
+    ]),
+  )
 
-  await db.batch(statements)
   return rows.length
 }
 
-/** Read current availability for a set of inventory ids. */
+/* ---------------- Reads ---------------- */
+
+export interface Availability {
+  onHand: number
+  reserved: number
+  available: number | null
+  inStock: boolean
+  tracked: boolean
+}
+
+/** Availability for one inventory row, or null if there is no row. */
 export async function getAvailability(
   db: D1Database,
-  inventoryIds: string[],
-): Promise<Map<string, { onHand: number; reserved: number; available: number; tracked: boolean }>> {
-  const out = new Map<
-    string,
-    { onHand: number; reserved: number; available: number; tracked: boolean }
-  >()
-  if (!inventoryIds.length) return out
+  inventoryId: string,
+): Promise<Availability | null> {
+  const row = await db
+    .prepare('SELECT on_hand, reserved, is_tracked FROM inventory WHERE id = ?1')
+    .bind(inventoryId)
+    .first<{ on_hand: number; reserved: number; is_tracked: number }>()
 
-  const placeholders = inventoryIds.map((_, i) => `?${i + 1}`).join(',')
-  const res = await db
+  if (!row) return null
+
+  const tracked = row.is_tracked === 1
+  const available = tracked ? Math.max(0, row.on_hand - row.reserved) : null
+
+  return {
+    onHand: row.on_hand,
+    reserved: row.reserved,
+    available,
+    inStock: !tracked || (available ?? 0) > 0,
+    tracked,
+  }
+}
+
+/**
+ * Availability for every inventory row in one query, keyed by product id.
+ * The catalogue lists nine pieces; one query instead of eighteen.
+ */
+export async function availabilityByProduct(
+  db: D1Database,
+): Promise<Map<string, { available: number | null; inStock: boolean }>> {
+  const rows = await db
     .prepare(
-      `SELECT id, on_hand, reserved, is_tracked, allow_backorder FROM inventory
-       WHERE id IN (${placeholders})`,
+      `SELECT product_id, variant_id, on_hand, reserved, sellable, is_tracked, allow_backorder
+         FROM inventory`,
     )
-    .bind(...inventoryIds)
     .all<{
-      id: string
+      product_id: string
+      variant_id: string | null
+      on_hand: number
+      reserved: number
+      sellable: number
+      is_tracked: number
+      allow_backorder: number
+    }>()
+
+  const out = new Map<string, { available: number | null; inStock: boolean }>()
+
+  for (const row of rows.results ?? []) {
+    // Variant rows are keyed separately by the caller; this map is the
+    // product-level answer, so a variant row only contributes when there is
+    // no product-level row to speak for it.
+    if (row.variant_id !== null && out.has(row.product_id)) continue
+
+    const tracked = row.is_tracked === 1
+    const available = tracked ? Math.max(0, row.on_hand - row.reserved) : null
+
+    out.set(row.product_id, {
+      available,
+      inStock: !tracked || row.allow_backorder === 1 || (available ?? 0) > 0,
+    })
+  }
+
+  return out
+}
+
+/** Availability for the variants of one product, keyed by variant id. */
+export async function availabilityByVariant(
+  db: D1Database,
+  productId: string,
+): Promise<Map<string, { available: number | null; inStock: boolean }>> {
+  const rows = await db
+    .prepare(
+      `SELECT variant_id, on_hand, reserved, is_tracked, allow_backorder
+         FROM inventory
+        WHERE product_id = ?1 AND variant_id IS NOT NULL`,
+    )
+    .bind(productId)
+    .all<{
+      variant_id: string
       on_hand: number
       reserved: number
       is_tracked: number
       allow_backorder: number
     }>()
 
-  for (const r of res.results ?? []) {
-    const tracked = r.is_tracked === 1
-    out.set(r.id, {
-      onHand: r.on_hand,
-      reserved: r.reserved,
-      available: tracked ? Math.max(0, r.on_hand - r.reserved) : Number.MAX_SAFE_INTEGER,
-      tracked,
+  const out = new Map<string, { available: number | null; inStock: boolean }>()
+
+  for (const row of rows.results ?? []) {
+    const tracked = row.is_tracked === 1
+    const available = tracked ? Math.max(0, row.on_hand - row.reserved) : null
+    out.set(row.variant_id, {
+      available,
+      inStock: !tracked || row.allow_backorder === 1 || (available ?? 0) > 0,
     })
   }
+
   return out
 }
 
-/** Throw a consistent out-of-stock error from reservation failures. */
-export function stockError(failures: ReservationResult['failures']) {
-  const detail = failures.map((f) => ({
-    name: f.name,
-    requested: f.requested,
-    available: f.available,
-  }))
-  const first = failures[0]
-  const message =
-    first.available === null
-      ? `“${first.name}” is no longer available.`
-      : first.available === 0
-        ? `“${first.name}” is sold out.`
-        : `Only ${first.available} of “${first.name}” remain.`
-  return outOfStock(message, { items: detail })
+/** The inventory row id for a purchasable target. */
+export async function inventoryIdFor(
+  db: D1Database,
+  productId: string,
+  variantId: string | null,
+): Promise<string | null> {
+  const row = await db
+    .prepare(
+      `SELECT id FROM inventory
+        WHERE product_id = ?1
+          AND ((?2 IS NULL AND variant_id IS NULL) OR variant_id = ?2)
+        LIMIT 1`,
+    )
+    .bind(productId, variantId)
+    .first<{ id: string }>()
+
+  return row?.id ?? null
+}
+
+export function reservationTtlFromEnv(env: Env): number {
+  const minutes = Number(env.ORDER_RESERVATION_MINUTES ?? '30')
+  return Number.isFinite(minutes) && minutes > 0 ? minutes * 60 * 1000 : RESERVATION_TTL_MS
 }

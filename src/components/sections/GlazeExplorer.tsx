@@ -1,87 +1,126 @@
 import { useState } from 'react'
-import type { Glaze } from '../../data/products'
-import { MediaImage } from '../ui/Media'
+import { AppLink, MediaImage } from '../ui/Media'
 import { ArrowRight } from '../ui/Icons'
-import { useReveal } from '../../lib/hooks'
-import { AppLink } from '../ui/Media'
+import type { Glaze } from '../../data/products'
+import { useCatalogue } from '../../lib/catalogue'
 
 interface GlazeExplorerProps {
   glazes: Glaze[]
 }
 
 /**
- * Glaze Explorer — every option shown here has a real photograph behind it,
- * so switching tabs always changes image, name and description together.
+ * GLAZE EXPLORER
+ * ------------------------------------------------------------------
+ * A tab panel, not a carousel. Carousels hide content and reset on every
+ * mistaken swipe; tabs let you compare glazes directly.
+ *
+ * Implemented as a proper ARIA tablist with roving arrow-key focus, so the
+ * whole widget is usable from the keyboard without touching the mouse.
  */
 export function GlazeExplorer({ glazes }: GlazeExplorerProps) {
-  const [active, setActive] = useState(0)
-  useReveal([active])
-  const glaze = glazes[active]
+  const [activeId, setActiveId] = useState(glazes[0]?.id ?? '')
+  const { products } = useCatalogue()
+
+  const active = glazes.find((g) => g.id === activeId) ?? glazes[0]
+  if (!active) return null
+
+  const count = products.filter((p) => p.glaze === active.id).length
+
+  const move = (delta: number) => {
+    const index = glazes.findIndex((g) => g.id === active.id)
+    const next = (index + delta + glazes.length) % glazes.length
+    setActiveId(glazes[next].id)
+    document.getElementById(`glaze-tab-${glazes[next].id}`)?.focus()
+  }
 
   return (
-    <section className="section glaze-explorer" aria-labelledby="glaze-title">
+    <section className="section" aria-labelledby="glaze-title">
       <div className="shell">
         <header className="glaze-explorer__head">
-          <p className="eyebrow reveal">Glaze Explorer</p>
+          <p className="eyebrow reveal">The Glazes</p>
           <h2 id="glaze-title" className="display display--md reveal" data-delay="1">
             Five surfaces, one kiln
           </h2>
           <p className="body reveal" data-delay="2">
-            The same clay and the same flame produce entirely different faces. Choose a glaze to see
-            the piece it belongs to.
+            The difference between these families is not pigment but chemistry: how iron
+            crystallises, how a thin film refracts light, how ash settles as the flame slows.
           </p>
         </header>
 
         <div className="glaze-explorer__body">
-          <div className="glaze-explorer__visual">
+          <div className="glaze-explorer__visual reveal">
             <MediaImage
-              key={glaze.id}
-              image={glaze.image}
-              alt={`${glaze.name} glaze — ${glaze.tagline}`}
-              ratio={4 / 5}
-              sizes="(min-width: 900px) 52vw, 92vw"
-              className="glaze-explorer__media"
-              showFallbackNote
+              image={active.image}
+              alt={`${active.name} glaze detail`}
+              ratio={4 / 3}
+              sizes="(min-width: 900px) 50vw, 92vw"
             />
             <span className="glaze-explorer__cn cn-mark" aria-hidden="true">
-              {glaze.cn}
+              {active.cn}
             </span>
           </div>
 
-          <div className="glaze-explorer__panel">
-            <div className="chip-row glaze-explorer__tabs" role="tablist" aria-label="Glaze types">
-              {glazes.map((g, i) => (
-                <button
-                  key={g.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={i === active}
-                  aria-controls="glaze-panel"
-                  id={`glaze-tab-${g.id}`}
-                  className={`chip ${i === active ? 'is-active' : ''}`}
-                  onClick={() => setActive(i)}
-                >
-                  {g.name}
-                </button>
-              ))}
+          <div>
+            <div className="chip-row glaze-explorer__tabs" role="tablist" aria-label="Glaze families">
+              {glazes.map((glaze) => {
+                const selected = glaze.id === active.id
+                return (
+                  <button
+                    key={glaze.id}
+                    id={`glaze-tab-${glaze.id}`}
+                    type="button"
+                    role="tab"
+                    aria-selected={selected}
+                    aria-controls={`glaze-panel-${glaze.id}`}
+                    tabIndex={selected ? 0 : -1}
+                    className={`chip ${selected ? 'is-active' : ''}`}
+                    onClick={() => setActiveId(glaze.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'ArrowRight') {
+                        event.preventDefault()
+                        move(1)
+                      } else if (event.key === 'ArrowLeft') {
+                        event.preventDefault()
+                        move(-1)
+                      } else if (event.key === 'Home') {
+                        event.preventDefault()
+                        setActiveId(glazes[0].id)
+                      } else if (event.key === 'End') {
+                        event.preventDefault()
+                        setActiveId(glazes[glazes.length - 1].id)
+                      }
+                    }}
+                  >
+                    {glaze.name}
+                  </button>
+                )
+              })}
             </div>
 
             <div
-              id="glaze-panel"
+              id={`glaze-panel-${active.id}`}
               role="tabpanel"
-              aria-labelledby={`glaze-tab-${glaze.id}`}
-              className="glaze-explorer__text"
+              aria-labelledby={`glaze-tab-${active.id}`}
               tabIndex={0}
+              className="glaze-explorer__text"
             >
               <p className="meta glaze-explorer__count">
-                {String(active + 1).padStart(2, '0')} / {String(glazes.length).padStart(2, '0')}
+                {count} piece{count === 1 ? '' : 's'} in this glaze
               </p>
-              <h3 className="display display--sm glaze-explorer__name">{glaze.name}</h3>
-              <p className="serif-italic glaze-explorer__tagline">{glaze.tagline}</p>
-              <p className="body">{glaze.description}</p>
 
-              <AppLink href={`/collection?glaze=${glaze.id}`} className="btn glaze-explorer__link">
-                See pieces in this glaze
+              <h3 className="display display--sm glaze-explorer__name">
+                {active.name}
+                <span className="sr-only"> — {active.cn}</span>
+              </h3>
+
+              <p className="serif-italic glaze-explorer__tagline">{active.tagline}</p>
+              <p className="body">{active.description}</p>
+
+              <AppLink
+                href={`/collection?glaze=${active.id}`}
+                className="btn glaze-explorer__link"
+              >
+                View {active.name} pieces
                 <ArrowRight width={16} height={16} className="btn__arrow" />
               </AppLink>
             </div>
@@ -91,3 +130,5 @@ export function GlazeExplorer({ glazes }: GlazeExplorerProps) {
     </section>
   )
 }
+
+export default GlazeExplorer

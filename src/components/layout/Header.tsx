@@ -1,23 +1,34 @@
 import { useEffect, useState } from 'react'
-import { navigation, site, announcement } from '../../data/site'
-import { useRoute, useScrollLock } from '../../lib/hooks'
-import { useCart } from '../../lib/cart'
 import { AppLink } from '../ui/Media'
-import { Cart, Close, Search } from '../ui/Icons'
+import { site, navigation, announcement } from '../../data/site'
+import { useCart } from '../../lib/cart'
+import { useRoute, useScrollLock, useEscape } from '../../lib/hooks'
+import { storeEnabled } from '../../config/store'
+import { Bag, Search, Close } from '../ui/Icons'
 import { SearchOverlay } from './SearchOverlay'
 
 /**
- * Header: transparent over the hero, then settles into a dark bar.
- * Mobile menu is a full-height dark panel with staggered links.
+ * HEADER
+ * ------------------------------------------------------------------
+ * Sticky, transparent over the hero and solid once scrolled.
+ *
+ * Details that matter:
+ *   • The mobile menu is focus-trapped and scroll-locked, and the scroll
+ *     position is restored on close.
+ *   • The cart button only exists when commerce is enabled, so a catalogue
+ *     build has no dead control in it.
+ *   • The count is announced politely rather than assertively; a cart that
+ *     interrupts a screen reader mid-sentence is a nuisance.
  */
 export function Header() {
   const route = useRoute()
-  const { count, openCart } = useCart()
+  const { itemCount, openDrawer } = useCart()
   const [scrolled, setScrolled] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
 
   useScrollLock(menuOpen)
+  useEscape(menuOpen, () => setMenuOpen(false))
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 24)
@@ -26,29 +37,21 @@ export function Header() {
     return () => window.removeEventListener('scroll', onScroll)
   }, [])
 
+  // A route change must not leave the drawer open over the new page.
   useEffect(() => {
     setMenuOpen(false)
   }, [route.path])
 
-  useEffect(() => {
-    if (!menuOpen) return
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setMenuOpen(false)
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [menuOpen])
-
   const isActive = (href: string) =>
-    href === '/' ? route.path === '/' : route.path === href || route.path.startsWith(`${href}/`)
+    href === '/' ? route.path === '/' : route.path.startsWith(href)
 
   return (
     <>
-      <a href="#main" className="skip-link">
+      <a className="skip-link" href="#main">
         Skip to content
       </a>
 
-      <div className="announce" role="status">
-        <span>{announcement}</span>
-      </div>
+      <p className="announce">{announcement}</p>
 
       <header className={`site-header ${scrolled ? 'is-scrolled' : ''}`}>
         <div className="site-header__inner">
@@ -66,7 +69,7 @@ export function Header() {
                   <AppLink
                     href={item.href}
                     className={`nav-link ${isActive(item.href) ? 'is-active' : ''}`}
-                    ariaLabel={item.label}
+                    aria-current={isActive(item.href) ? 'page' : undefined}
                   >
                     {item.label}
                   </AppLink>
@@ -82,32 +85,38 @@ export function Header() {
               onClick={() => setSearchOpen(true)}
               aria-label="Search the collection"
             >
-              <Search width={16} height={16} />
+              <Search width={17} height={17} />
             </button>
 
-            <button
-              type="button"
-              className="icon-btn cart-btn"
-              onClick={openCart}
-              aria-label={count > 0 ? `Open cart, ${count} items` : 'Open cart, empty'}
-            >
-              <Cart width={16} height={16} />
-              {count > 0 && (
-                <span className="cart-btn__count" aria-hidden="true">
-                  {count > 99 ? '99+' : count}
-                </span>
-              )}
-            </button>
+            {storeEnabled() && (
+              <button
+                type="button"
+                className="icon-btn cart-btn"
+                onClick={openDrawer}
+                aria-label={
+                  itemCount === 0
+                    ? 'Open cart, empty'
+                    : `Open cart, ${itemCount} item${itemCount === 1 ? '' : 's'}`
+                }
+              >
+                <Bag width={17} height={17} />
+                {itemCount > 0 && (
+                  <span className="cart-btn__count" aria-hidden="true">
+                    {itemCount > 9 ? '9+' : itemCount}
+                  </span>
+                )}
+              </button>
+            )}
 
             <button
               type="button"
               className="menu-btn"
+              onClick={() => setMenuOpen(true)}
+              aria-label="Open menu"
               aria-expanded={menuOpen}
               aria-controls="mobile-menu"
-              aria-label={menuOpen ? 'Close menu' : 'Open menu'}
-              onClick={() => setMenuOpen((v) => !v)}
             >
-              <span className="menu-btn__bars" aria-hidden="true">
+              <span className="menu-btn__bars">
                 <span />
                 <span />
               </span>
@@ -116,7 +125,10 @@ export function Header() {
         </div>
       </header>
 
-      {/* Mobile / tablet menu */}
+      {menuOpen && (
+        <div className="menu-scrim" onClick={() => setMenuOpen(false)} aria-hidden="true" />
+      )}
+
       <div
         id="mobile-menu"
         className={`mobile-menu ${menuOpen ? 'is-open' : ''}`}
@@ -137,14 +149,14 @@ export function Header() {
         <nav aria-label="Mobile">
           <ul className="mobile-menu__list">
             {navigation.map((item, i) => (
-              <li key={item.href} style={{ transitionDelay: `${0.06 + i * 0.05}s` }}>
+              <li key={item.href} style={{ transitionDelay: `${0.06 * i}s` }}>
                 <AppLink
                   href={item.href}
                   className={`mobile-menu__link ${isActive(item.href) ? 'is-active' : ''}`}
                   onClick={() => setMenuOpen(false)}
                 >
-                  <span className="mobile-menu__index">0{i + 1}</span>
-                  <span>{item.label}</span>
+                  <span className="mobile-menu__index">{String(i + 1).padStart(2, '0')}</span>
+                  {item.label}
                 </AppLink>
               </li>
             ))}
@@ -153,15 +165,15 @@ export function Header() {
 
         <div className="mobile-menu__foot">
           <p className="mobile-menu__tag">{site.tagline}</p>
-          <p className="meta">
-            {site.email} · {site.phone}
-          </p>
+          <AppLink href={`mailto:${site.email}`} className="footer-link">
+            {site.email}
+          </AppLink>
         </div>
       </div>
-
-      {menuOpen && <div className="menu-scrim" onClick={() => setMenuOpen(false)} aria-hidden="true" />}
 
       <SearchOverlay open={searchOpen} onClose={() => setSearchOpen(false)} />
     </>
   )
 }
+
+export default Header

@@ -1,122 +1,186 @@
-import { useState, type MouseEvent, type ReactNode } from 'react'
-import { img, srcSet, type ImageKey } from '../../data/images'
-import { navigate, toHref } from '../../lib/hooks'
+import {
+  useState,
+  type AnchorHTMLAttributes,
+  type MouseEvent,
+  type ReactNode,
+} from 'react'
+import { img, srcSet, PHOTOS, type ImageKey } from '../../data/images'
+import { navigate } from '../../lib/hooks'
 
-interface MediaProps {
-  image: ImageKey
-  alt: string
-  /** Aspect ratio as width / height, e.g. 3/4 */
-  ratio?: number
-  sizes?: string
-  priority?: boolean
-  className?: string
-  imgClassName?: string
-  overlay?: ReactNode
-  /** Show the source path when the file cannot be loaded */
-  showFallbackNote?: boolean
-}
+/* ================================================================== */
+/* AppLink — internal navigation without a full reload                */
+/* ================================================================== */
 
-/**
- * Responsive image with a gentle fade-in and a visible fallback if the
- * photo cannot be loaded (so a missing asset is obvious, never silent).
- */
-export function MediaImage({
-  image,
-  alt,
-  ratio = 3 / 4,
-  sizes = '100vw',
-  priority = false,
-  className = '',
-  imgClassName = '',
-  overlay,
-  showFallbackNote = false,
-}: MediaProps) {
-  const [loaded, setLoaded] = useState(false)
-  const [errored, setErrored] = useState(false)
-
-  return (
-    <div
-      className={`media media--reveal ${loaded ? 'is-loaded' : ''} ${errored ? 'is-error' : ''} ${className}`}
-      style={{ aspectRatio: String(ratio) }}
-    >
-      {!errored && (
-        <img
-          src={img(image, priority ? 1600 : 1200)}
-          srcSet={srcSet(image) || undefined}
-          sizes={sizes}
-          alt={alt}
-          loading={priority ? 'eager' : 'lazy'}
-          decoding={priority ? 'sync' : 'async'}
-          fetchPriority={priority ? 'high' : 'auto'}
-          width={1200}
-          height={Math.round(1200 / ratio)}
-          onLoad={() => setLoaded(true)}
-          onError={() => setErrored(true)}
-          className={imgClassName}
-        />
-      )}
-      <div className="media__fallback" aria-hidden={!errored}>
-        <span>Image unavailable</span>
-        {showFallbackNote && <code>src/data/images.ts → {image}</code>}
-      </div>
-      {overlay}
-    </div>
-  )
-}
-
-interface AppLinkProps {
+type AppLinkProps = Omit<AnchorHTMLAttributes<HTMLAnchorElement>, 'href'> & {
   href: string
   children: ReactNode
-  className?: string
-  onClick?: () => void
+  /** Accessible name, when the visible text is not enough. */
   ariaLabel?: string
-  /** Force normal browser navigation (needed for WordPress checkout) */
+  /** Treat as external even when the href looks internal. */
   external?: boolean
-  title?: string
 }
 
-/**
- * Internal links are handled by the lightweight router; external links use
- * ordinary browser navigation so WordPress receives the visitor normally.
- */
-export function AppLink({
-  href,
-  children,
-  className,
-  onClick,
-  ariaLabel,
-  external,
-  title,
-}: AppLinkProps) {
-  const isExternal =
-    external ||
-    /^https?:\/\//i.test(href) ||
-    href.startsWith('mailto:') ||
-    href.startsWith('tel:')
+const isExternal = (href: string) =>
+  /^(https?:)?\/\//.test(href) || href.startsWith('mailto:') || href.startsWith('tel:')
 
-  const handle = (e: MouseEvent<HTMLAnchorElement>) => {
-    if (isExternal) {
-      onClick?.()
-      return
-    }
-    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
-    e.preventDefault()
-    onClick?.()
+/**
+ * Internal links go through the client router; anything else is a normal
+ * navigation. Modifier clicks (new tab, save, middle-click) are left alone
+ * so the browser's own behaviour is never broken.
+ */
+export function AppLink({ href, children, ariaLabel, external, onClick, ...rest }: AppLinkProps) {
+  const absolute = isExternal(href) || external === true
+
+  const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    onClick?.(event)
+    if (event.defaultPrevented) return
+    if (absolute) return
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+    if (event.button !== 0) return
+
+    event.preventDefault()
     navigate(href)
   }
 
   return (
     <a
-      href={isExternal ? href : toHref(href)}
-      className={className}
-      onClick={handle}
+      href={href}
       aria-label={ariaLabel}
-      title={title}
-      {...(isExternal && href.startsWith('http')
-        ? { target: '_blank', rel: 'noopener noreferrer' }
-        : {})}
+      onClick={handleClick}
+      {...(absolute && href.startsWith('http') ? { rel: 'noreferrer noopener' } : {})}
+      {...rest}
     >
       {children}
     </a>
+  )
+}
+
+/* ================================================================== */
+/* MediaImage — a photo by registry key, with reserved space          */
+/* ================================================================== */
+
+interface MediaImageProps {
+  image: ImageKey
+  alt: string
+  /** width / height. Reserving the box prevents layout shift. */
+  ratio?: number
+  sizes?: string
+  className?: string
+  priority?: boolean
+}
+
+/**
+ * The aspect-ratio box is set inline rather than in CSS because the value
+ * varies per usage and a fixed class per ratio would multiply the stylesheet
+ * for no gain. `object-fit: cover` lives in `.media img`.
+ */
+export function MediaImage({
+  image,
+  alt,
+  ratio = 4 / 5,
+  sizes = '(min-width: 900px) 45vw, 92vw',
+  className = '',
+  priority = false,
+}: MediaImageProps) {
+  const [loaded, setLoaded] = useState(false)
+  const [failed, setFailed] = useState(false)
+
+  return (
+    <div
+      className={`media media--reveal ${loaded ? 'is-loaded' : ''} ${
+        failed ? 'is-error' : ''
+      } ${className}`}
+      style={{ aspectRatio: `${ratio}` }}
+    >
+      <img
+        src={img(image, 1200)}
+        srcSet={srcSet(image)}
+        sizes={sizes}
+        alt={alt}
+        loading={priority ? 'eager' : 'lazy'}
+        decoding={priority ? 'sync' : 'async'}
+        fetchPriority={priority ? 'high' : 'auto'}
+        onLoad={() => setLoaded(true)}
+        onError={() => setFailed(true)}
+      />
+
+      {/* Shown only if the photo cannot be fetched: names the slot so the
+          gap is diagnosable rather than a silent grey rectangle. */}
+      <div className="media__fallback" aria-hidden="true">
+        <span>Image unavailable</span>
+        <code>{String(image)}</code>
+      </div>
+    </div>
+  )
+}
+
+/* ================================================================== */
+/* ProductImage — the same contract, but from an absolute URL          */
+/* ================================================================== */
+
+interface ProductImageProps {
+  /** Absolute URL from the API, or '' when a piece has no photo yet. */
+  src: string
+  alt: string
+  ratio?: number
+  sizes?: string
+  className?: string
+  priority?: boolean
+}
+
+/**
+ * Product photographs come from `product_images.url`, which the API serves
+ * as an absolute URL — they are not in the local registry, so `img()` and
+ * `srcSet()` cannot be used here. The CDN handles resizing for the Pexels
+ * URLs we seed; an R2 URL serves one size.
+ */
+export function ProductImage({
+  src,
+  alt,
+  ratio = 1,
+  sizes = '(min-width: 900px) 45vw, 92vw',
+  className = '',
+  priority = false,
+}: ProductImageProps) {
+  const [loaded, setLoaded] = useState(false)
+  const [failed, setFailed] = useState(!src)
+
+  return (
+    <div
+      className={`media media--reveal ${loaded ? 'is-loaded' : ''} ${
+        failed ? 'is-error' : ''
+      } ${className}`}
+      style={{ aspectRatio: `${ratio}` }}
+    >
+      {src && !failed && (
+        <img
+          src={src}
+          sizes={sizes}
+          alt={alt}
+          loading={priority ? 'eager' : 'lazy'}
+          decoding={priority ? 'sync' : 'async'}
+          fetchPriority={priority ? 'high' : 'auto'}
+          onLoad={() => setLoaded(true)}
+          onError={() => setFailed(true)}
+        />
+      )}
+
+      <div className="media__fallback" aria-hidden="true">
+        <span>{failed ? 'Photograph pending' : 'Loading'}</span>
+        {failed && <code>no image</code>}
+      </div>
+    </div>
+  )
+}
+
+/* ================================================================== */
+/* Credit line (Pexels attribution, optional)                          */
+/* ================================================================== */
+
+export function PhotoCredit({ image }: { image: ImageKey }) {
+  return (
+    <span className="meta" style={{ fontSize: 9, opacity: 0.55 }}>
+      {PHOTOS[image].note} · Pexels
+    </span>
   )
 }
